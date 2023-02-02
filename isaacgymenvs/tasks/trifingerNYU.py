@@ -175,7 +175,7 @@ class CuboidalObject:
         self.min_height = self._size[2] / 2
 
 
-class Trifinger2(VecTask):
+class TrifingerNYU(VecTask):
 
     # constants
     # directory where assets for the simulator are present
