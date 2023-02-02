@@ -325,10 +325,11 @@ class Trifinger2(VecTask):
         self.cfg = cfg
 
         self.obs_spec = {
-            "robot_q": self._dims.GeneralizedCoordinatesDim.value,
-            "robot_u": self._dims.GeneralizedVelocityDim.value,
-            "object_q": self._dims.ObjectPoseDim.value,
-            "object_q_des": self._dims.ObjectPoseDim.value,
+            "joint_position": self._dims.GeneralizedCoordinatesDim.value,
+            "joint_velocity": self._dims.GeneralizedVelocityDim.value,
+            "fingertip_state": self._dims.NumFingers.value * self._dims.StateDim.value,
+            "object_pose": self._dims.ObjectPoseDim.value,
+            "desired_object_pose": self._dims.ObjectPoseDim.value,
             "command": self.action_dim
         }
         if self.cfg["env"]["asymmetric_obs"]:
@@ -336,9 +337,8 @@ class Trifinger2(VecTask):
                 # observations spec
                 **self.obs_spec,
                 # extra observations (added separately to make computations simpler)
-                "object_u": self._dims.ObjectVelocityDim.value,
-                "fingertip_state": self._dims.NumFingers.value * self._dims.StateDim.value,
-                "robot_a": self._dims.GeneralizedVelocityDim.value,
+                "object_velocity": self._dims.ObjectVelocityDim.value,
+                "joint_torque": self._dims.GeneralizedVelocityDim.value,
                 "fingertip_wrench": self._dims.NumFingers.value * self._dims.WrenchDim.value,
             }
         else:
@@ -626,24 +626,7 @@ class Trifinger2(VecTask):
                                         self._object_limits["position"].high,
                                         self._object_limits["orientation"].high,
                                     ]*2)
-
-        # Note: This is order sensitive.
-        self._observations_scale.low = torch.cat([
-            self._robot_limits["joint_position"].low,
-            self._robot_limits["joint_velocity"].low,
-            object_obs_low,
-            obs_action_scale.low
-        ])
-        self._observations_scale.high = torch.cat([
-            self._robot_limits["joint_position"].high,
-            self._robot_limits["joint_velocity"].high,
-            object_obs_high,
-            obs_action_scale.high
-        ])
-        # State scale for the MDP
-        if self.cfg["env"]["asymmetric_obs"]:
-            # finger tip scaling
-            fingertip_state_scale = SimpleNamespace(
+        fingertip_state_scale = SimpleNamespace(
                 low=torch.cat([
                     self._robot_limits["fingertip_position"].low,
                     self._robot_limits["fingertip_orientation"].low,
@@ -655,17 +638,35 @@ class Trifinger2(VecTask):
                     self._robot_limits["fingertip_velocity"].high,
                 ])
             )
+
+        # Note: This is order sensitive.
+        self._observations_scale.low = torch.cat([
+            self._robot_limits["joint_position"].low,
+            self._robot_limits["joint_velocity"].low,
+            fingertip_state_scale.low.repeat(self._dims.NumFingers.value),
+            object_obs_low,
+            obs_action_scale.low
+        ])
+        self._observations_scale.high = torch.cat([
+            self._robot_limits["joint_position"].high,
+            self._robot_limits["joint_velocity"].high,
+            fingertip_state_scale.high.repeat(self._dims.NumFingers.value),
+            object_obs_high,
+            obs_action_scale.high
+        ])
+        # State scale for the MDP
+        if self.cfg["env"]["asymmetric_obs"]:
+            # finger tip scaling
+            
             states_low = [
                 self._observations_scale.low,
                 self._object_limits["velocity"].low,
-                fingertip_state_scale.low.repeat(self._dims.NumFingers.value),
                 self._robot_limits["joint_torque"].low,
                 self._robot_limits["fingertip_wrench"].low.repeat(self._dims.NumFingers.value),
             ]
             states_high = [
                 self._observations_scale.high,
                 self._object_limits["velocity"].high,
-                fingertip_state_scale.high.repeat(self._dims.NumFingers.value),
                 self._robot_limits["joint_torque"].high,
                 self._robot_limits["fingertip_wrench"].high.repeat(self._dims.NumFingers.value),
             ]
@@ -1402,6 +1403,7 @@ def compute_trifinger_observations_states(
     obs_buf = torch.cat([
         dof_position,
         dof_velocity,
+        fingertip_state.reshape(num_envs, -1),
         object_state[:, 0:7], # pose
         object_goal_poses,
         actions
@@ -1411,7 +1413,6 @@ def compute_trifinger_observations_states(
         states_buf = torch.cat([
             obs_buf,
             object_state[:, 7:13], # linear / angular velocity
-            fingertip_state.reshape(num_envs, -1),
             joint_torques,
             tip_wrenches
         ], dim=-1)
