@@ -209,7 +209,7 @@ class Trifinger2(VecTask):
 
     # buffers to store the simulation data
     # goal poses for the object [num. of instances, 7] where 7: (x, y, z, quat)
-    _object_goal_poses_buf: torch.Tensor
+    _desired_object_poses_buf: torch.Tensor
     # DOF state of the system [num. of instances, num. of dof, 2] where last index: pos, vel
     _dof_state: torch.Tensor
     # Rigid body state of the system [num. of instances, num. of bodies, 13] where 13: (x, y, z, quat, v, omega)
@@ -402,10 +402,10 @@ class Trifinger2(VecTask):
             self._robot_dof_gains[gain_name] = torch.tensor(value, dtype=torch.float, device=self.device)
 
         # store the sampled goal poses for the object: [num. of instances, 7]
-        self._object_goal_poses_buf = torch.zeros((self.num_envs, 7), device=self.device, dtype=torch.float)
+        self._desired_object_poses_buf = torch.zeros((self.num_envs, 7), device=self.device, dtype=torch.float)
         # get force torque sensor if enabled
         if self.cfg["env"]["enable_ft_sensors"] or self.cfg["env"]["asymmetric_obs"]:
-            # # joint torques
+            # # joint torque
             # dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
             # self._dof_torque = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs,
             #                                                                self._dims.JointTorqueDim.value)
@@ -601,7 +601,7 @@ class Trifinger2(VecTask):
             self._action_scale.low = self._robot_limits["joint_position"].low
             self._action_scale.high = self._robot_limits["joint_position"].high
         elif self.cfg["env"]["command_mode"] == "torque":
-            # action space is joint torques
+            # action space is joint torque
             self._action_scale.low = self._robot_limits["joint_torque"].low
             self._action_scale.high = self._robot_limits["joint_torque"].high
         else:
@@ -727,7 +727,7 @@ class Trifinger2(VecTask):
             self.cfg["env"]["reward_terms"]["object_dist"]["weight"],
             self.cfg["env"]["reward_terms"]["object_rot"]["weight"],
             self.env_steps_count,
-            self._object_goal_poses_buf,
+            self._desired_object_poses_buf,
             self._object_state_history[0],
             self._object_state_history[1],
             self._fingertips_frames_state_history[0],
@@ -746,12 +746,12 @@ class Trifinger2(VecTask):
         if self.cfg["env"]["enable_ft_sensors"] or self.cfg["env"]["asymmetric_obs"]:
             self.gym.refresh_dof_force_tensor(self.sim)
             self.gym.refresh_force_sensor_tensor(self.sim)
-            joint_torques = self._dof_torque
-            tip_wrenches = self._ft_sensors_values
+            joint_torque = self._dof_torque
+            tip_wrench = self._ft_sensors_values
 
         else:
-            joint_torques = torch.zeros(self.num_envs, self._dims.JointTorqueDim.value, dtype=torch.float32, device=self.device)
-            tip_wrenches = torch.zeros(self.num_envs, self._dims.NumFingers.value * self._dims.WrenchDim.value, dtype=torch.float32, device=self.device)
+            joint_torque = torch.zeros(self.num_envs, self._dims.JointTorqueDim.value, dtype=torch.float32, device=self.device)
+            tip_wrench = torch.zeros(self.num_envs, self._dims.NumFingers.value * self._dims.WrenchDim.value, dtype=torch.float32, device=self.device)
 
         # extract frame handles
         fingertip_handles_indices = list(self._fingertips_handles.values())
@@ -766,11 +766,11 @@ class Trifinger2(VecTask):
             self._dof_position,
             self._dof_velocity,
             self._object_state_history[0],
-            self._object_goal_poses_buf,
+            self._desired_object_poses_buf,
             self.actions,
             self._fingertips_frames_state_history[0],
-            joint_torques,
-            tip_wrenches,
+            joint_torque,
+            tip_wrench,
         )
 
         # normalize observations if flag is enabled
@@ -815,7 +815,7 @@ class Trifinger2(VecTask):
             distribution=object_initial_state_config["type"],
         )
         # -- Sampling of goal pose of the object
-        self._sample_object_goal_poses(
+        self._sample_desired_object_poses(
             env_ids,
             difficulty=self.cfg["env"]["task_difficulty"]
         )
@@ -926,7 +926,7 @@ class Trifinger2(VecTask):
         # root actor buffer
         self._actors_root_state[object_indices] = self._object_state_history[0][instances]
 
-    def _sample_object_goal_poses(self, instances: torch.Tensor, difficulty: int):
+    def _sample_desired_object_poses(self, instances: torch.Tensor, difficulty: int):
         """Sample goal poses for the cube and sets them into the desired goal pose buffer.
 
         Args:
@@ -983,12 +983,12 @@ class Trifinger2(VecTask):
         goal_object_indices = self.gym_indices["goal_object"][instances]
         # set values into buffer
         # object goal buffer
-        self._object_goal_poses_buf[instances, 0] = pos_x
-        self._object_goal_poses_buf[instances, 1] = pos_y
-        self._object_goal_poses_buf[instances, 2] = pos_z
-        self._object_goal_poses_buf[instances, 3:7] = orientation
+        self._desired_object_poses_buf[instances, 0] = pos_x
+        self._desired_object_poses_buf[instances, 1] = pos_y
+        self._desired_object_poses_buf[instances, 2] = pos_z
+        self._desired_object_poses_buf[instances, 3:7] = orientation
         # root actor buffer
-        self._actors_root_state[goal_object_indices, 0:7] = self._object_goal_poses_buf[instances]
+        self._actors_root_state[goal_object_indices, 0:7] = self._desired_object_poses_buf[instances]
         # self._actors_root_state[goal_object_indices, 2] = -10
 
     def pre_physics_step(self, actions):
@@ -1041,7 +1041,7 @@ class Trifinger2(VecTask):
                 lower=self._robot_limits["joint_torque"].low,
                 upper=self._robot_limits["joint_torque"].high
             )
-        # set computed torques to simulator buffer.
+        # set computed torque to simulator buffer.
         self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(applied_torque))
 
     def post_physics_step(self):
@@ -1069,20 +1069,20 @@ class Trifinger2(VecTask):
         termination_config = self.cfg["env"]["termination_conditions"]
         # Termination condition - successful completion
         # Calculate distance between current object and goal
-        object_goal_position_dist = torch.norm(
-            self._object_goal_poses_buf[:, 0:3] - self._object_state_history[0][:, 0:3],
+        desired_object_position_dist = torch.norm(
+            self._desired_object_poses_buf[:, 0:3] - self._object_state_history[0][:, 0:3],
             p=2, dim=-1
         )
         # log theoretical number of r eseats
-        goal_position_reset = torch.le(object_goal_position_dist,
+        goal_position_reset = torch.le(desired_object_position_dist,
                                        termination_config["success"]["position_tolerance"])
         self._step_info['env/current_position_goal/per_env'] = np.mean(goal_position_reset.float().cpu().numpy())
         # For task with difficulty 4, we need to check if orientation matches as well.
         # Compute the difference in orientation between object and goal pose
-        object_goal_orientation_dist = quat_diff_rad(self._object_state_history[0][:, 3:7],
-                                                     self._object_goal_poses_buf[:, 3:7])
+        desired_object_orientation_dist = quat_diff_rad(self._object_state_history[0][:, 3:7],
+                                                     self._desired_object_poses_buf[:, 3:7])
         # Check for distance within tolerance
-        goal_orientation_reset = torch.le(object_goal_orientation_dist,
+        goal_orientation_reset = torch.le(desired_object_orientation_dist,
                                           termination_config["success"]["orientation_tolerance"])
         self._step_info['env/current_orientation_goal/per_env'] =  np.mean(goal_orientation_reset.float().cpu().numpy())
 
@@ -1303,7 +1303,7 @@ def compute_trifinger_reward(
         object_dist_weight: float,
         object_rot_weight: float,
         env_steps_count: int,
-        object_goal_poses_buf: torch.Tensor,
+        desired_object_poses_buf: torch.Tensor,
         object_state: torch.Tensor,
         last_object_state: torch.Tensor,
         fingertip_state: torch.Tensor,
@@ -1338,7 +1338,7 @@ def compute_trifinger_reward(
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])
-        goal_keypoints = gen_keypoints(object_goal_poses_buf[:, 0:7])
+        goal_keypoints = gen_keypoints(desired_object_poses_buf[:, 0:7])
 
         delta = object_keypoints - goal_keypoints
 
@@ -1351,14 +1351,14 @@ def compute_trifinger_reward(
     else:
 
         # Reward for object distance
-        object_dist = torch.norm(object_state[:, 0:3] - object_goal_poses_buf[:, 0:3], p=2, dim=-1)
+        object_dist = torch.norm(object_state[:, 0:3] - desired_object_poses_buf[:, 0:3], p=2, dim=-1)
         object_dist_reward = object_dist_weight * dt * lgsk_kernel(object_dist, scale=50., eps=2.)
 
         # Reward for object rotation
 
         # extract quaternion orientation
         quat_a = object_state[:, 3:7]
-        quat_b = object_goal_poses_buf[:, 3:7]
+        quat_b = desired_object_poses_buf[:, 3:7]
 
         angles = quat_diff_rad(quat_a, quat_b)
         object_rot_reward =  object_rot_weight * dt / (3. * torch.abs(angles) + 0.01)
@@ -1391,11 +1391,11 @@ def compute_trifinger_observations_states(
         dof_position: torch.Tensor,
         dof_velocity: torch.Tensor,
         object_state: torch.Tensor,
-        object_goal_poses: torch.Tensor,
+        desired_object_poses: torch.Tensor,
         actions: torch.Tensor,
         fingertip_state: torch.Tensor,
-        joint_torques: torch.Tensor,
-        tip_wrenches: torch.Tensor
+        joint_torque: torch.Tensor,
+        tip_wrench: torch.Tensor
 ):
 
     num_envs = dof_position.shape[0]
@@ -1405,7 +1405,7 @@ def compute_trifinger_observations_states(
         dof_velocity,
         fingertip_state.reshape(num_envs, -1),
         object_state[:, 0:7], # pose
-        object_goal_poses,
+        desired_object_poses,
         actions
     ], dim=-1)
 
@@ -1413,8 +1413,8 @@ def compute_trifinger_observations_states(
         states_buf = torch.cat([
             obs_buf,
             object_state[:, 7:13], # linear / angular velocity
-            joint_torques,
-            tip_wrenches
+            joint_torque,
+            tip_wrench
         ], dim=-1)
     else:
         states_buf = obs_buf
