@@ -975,6 +975,12 @@ class TrifingerNYU(VecTask):
             # in the cirriculum
             pos_x, pos_y = random_xy(num_samples, max_goal_radius, self.device)
             pos_z = random_z(num_samples, self._object_dims.radius_3d, max_height, self.device)
+        elif difficulty == -2:
+            # Desired goal coincides with the initial object pose
+            pos_x = self._object_state_history[0][instances, 0]
+            pos_y = self._object_state_history[0][instances, 1]
+            pos_z = self._object_state_history[0][instances, 2]
+            orientation = self._object_state_history[0][instances, 3:7]
         else:
             msg = f"Invalid difficulty index for task: {difficulty}."
             raise ValueError(msg)

@@ -39,7 +39,7 @@ checkpoint: ''
 # set to True to use multi-gpu horovod training
 multi_gpu: False
 
-wandb_activate: True
+wandb_activate: False
 wandb_group: ''
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
@@ -54,7 +54,7 @@ headless: False
 
 # set default task and default training config based on task
 defaults:
-  - task: Ant
+  - task: TrifingerNYU
   - train: ${task}PPO
   - hydra/job_logging: disabled
 
