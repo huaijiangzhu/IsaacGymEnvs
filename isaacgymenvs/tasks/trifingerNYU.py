@@ -328,6 +328,7 @@ class TrifingerNYU(VecTask):
             "joint_position": self._dims.GeneralizedCoordinatesDim.value,
             "joint_velocity": self._dims.GeneralizedVelocityDim.value,
             "fingertip_state": self._dims.NumFingers.value * self._dims.StateDim.value,
+            "desired_fingertip_position": self._dims.NumFingers.value * 3,
             "object_pose": self._dims.ObjectPoseDim.value,
             "desired_object_pose": self._dims.ObjectPoseDim.value,
             "command": self.action_dim
@@ -638,12 +639,18 @@ class TrifingerNYU(VecTask):
                     self._robot_limits["fingertip_velocity"].high,
                 ])
             )
+        
+        fingertip_position_scale = SimpleNamespace(
+            low=self._robot_limits["fingertip_position"].low,
+            high=self._robot_limits["fingertip_position"].high,
+        )
 
         # Note: This is order sensitive.
         self._observations_scale.low = torch.cat([
             self._robot_limits["joint_position"].low,
             self._robot_limits["joint_velocity"].low,
             fingertip_state_scale.low.repeat(self._dims.NumFingers.value),
+            fingertip_position_scale.low.repeat(self._dims.NumFingers.value),
             object_obs_low,
             obs_action_scale.low
         ])
@@ -651,6 +658,7 @@ class TrifingerNYU(VecTask):
             self._robot_limits["joint_position"].high,
             self._robot_limits["joint_velocity"].high,
             fingertip_state_scale.high.repeat(self._dims.NumFingers.value),
+            fingertip_position_scale.high.repeat(self._dims.NumFingers.value),
             object_obs_high,
             obs_action_scale.high
         ])
@@ -1405,11 +1413,13 @@ def compute_trifinger_observations_states(
 ):
 
     num_envs = dof_position.shape[0]
+    fingertip_position = fingertip_state[:, :, 0:3]
 
     obs_buf = torch.cat([
         dof_position,
         dof_velocity,
         fingertip_state.reshape(num_envs, -1),
+        fingertip_position.reshape(num_envs, -1),
         object_state[:, 0:7], # pose
         desired_object_poses,
         actions
