@@ -210,6 +210,8 @@ class TrifingerNYU(VecTask):
     # buffers to store the simulation data
     # goal poses for the object [num. of instances, 7] where 7: (x, y, z, quat)
     _desired_object_poses_buf: torch.Tensor
+    # desired positions for the fingertip [num. of instances, num. of fingers, 3] where 7: (x, y, z)
+    _desired_fingertip_position_local: torch.Tensor
     # DOF state of the system [num. of instances, num. of dof, 2] where last index: pos, vel
     _dof_state: torch.Tensor
     # Rigid body state of the system [num. of instances, num. of bodies, 13] where 13: (x, y, z, quat, v, omega)
@@ -230,6 +232,9 @@ class TrifingerNYU(VecTask):
     # Object prim state [num. of instances, 13] where 13: (x, y, z, quat, v, omega)
     # The length of list is the history of the state: 0: t, 1: t-1, 2: t-2, ... step.
     _object_state_history: Deque[torch.Tensor] = deque(maxlen=_state_history_len)
+    # Desired fingertip position list([num. of instances, num. of fingers, 3]) where 3: (x, y, z)
+    # The length of list is the history of the state: 0: t, 1: t-1, 2: t-2, ... step.
+    _desired_fingertip_position_history: Deque[torch.Tensor] = deque(maxlen=_state_history_len)
     # stores the last action output
     _last_action: torch.Tensor
     # keeps track of the number of goal resets
@@ -404,6 +409,8 @@ class TrifingerNYU(VecTask):
 
         # store the sampled goal poses for the object: [num. of instances, 7]
         self._desired_object_poses_buf = torch.zeros((self.num_envs, 7), device=self.device, dtype=torch.float)
+        # store the sampled goal positions for the fingertip: [num. of instances, 3]
+        self._desired_fingertip_position_local = torch.zeros((self.num_envs, 3, 3), device=self.device, dtype=torch.float)
         # get force torque sensor if enabled
         if self.cfg["env"]["enable_ft_sensors"] or self.cfg["env"]["asymmetric_obs"]:
             # # joint torque
@@ -767,8 +774,15 @@ class TrifingerNYU(VecTask):
         # update state histories
         self._fingertips_frames_state_history.appendleft(self._rigid_body_state[:, fingertip_handles_indices])
         self._object_state_history.appendleft(self._actors_root_state[object_indices])
-        # fill the observations and states buffer
 
+        # compute desired fingertip position in the world frame
+        desired_fingertip_position = compute_desired_fingertip_position(
+            self._object_state_history[0], 
+            self._desired_fingertip_position_local
+        )
+        self._desired_fingertip_position_history.appendleft(desired_fingertip_position)
+
+        # fill the observations and states buffer
         self.obs_buf[:], self.states_buf[:] = compute_trifinger_observations_states(
             self.cfg["env"]["asymmetric_obs"],
             self._dof_position,
@@ -777,6 +791,7 @@ class TrifingerNYU(VecTask):
             self._desired_object_poses_buf,
             self.actions,
             self._fingertips_frames_state_history[0],
+            desired_fingertip_position,
             joint_torque,
             tip_wrench,
         )
@@ -888,6 +903,20 @@ class TrifingerNYU(VecTask):
         for idx in range(1, self._state_history_len):
             self._fingertips_frames_state_history[idx][instances] = 0.0
 
+    def _sample_desired_fingertip_positions(self, instances: torch.Tensor, distribution: str):
+        """Sample desired fingertip positions in the object frame
+
+        Type of distribution: ["default", "random", "none"]
+             - "default" means that pose is default configuration.
+             - "random" means that pose is randomly sampled on the table.
+             - "none" means no resetting of object pose between episodes.
+
+        Args:
+            instances: A tensor constraining indices of environment instances to reset.
+            distribution: Name of distribution to sample initial state from: ['default', 'random']
+        """
+
+        pass
     def _sample_object_poses(self, instances: torch.Tensor, distribution: str):
         """Sample poses for the cube.
 
@@ -1398,6 +1427,20 @@ def compute_trifinger_reward(
 
     return total_reward, reset, info
 
+@torch.jit.script
+def compute_desired_fingertip_position(
+    object_state: torch.Tensor,
+    desired_fingertip_position_local: torch.Tensor
+):
+    # desired fingertip position from the object frame to the world frame
+    object_position = object_state[:, 0:3]
+    object_orientation = object_state[:, 3:7]
+    desired_fingertip_position = torch.stack([
+        object_position + quat_rotate(object_orientation, desired_fingertip_position_local[:, i, :])
+        for i in range(3)
+    ], dim=-1)
+
+    return desired_fingertip_position
 
 @torch.jit.script
 def compute_trifinger_observations_states(
@@ -1408,18 +1451,18 @@ def compute_trifinger_observations_states(
         desired_object_poses: torch.Tensor,
         actions: torch.Tensor,
         fingertip_state: torch.Tensor,
+        desired_fingertip_position: torch.Tensor,
         joint_torque: torch.Tensor,
         tip_wrench: torch.Tensor
 ):
 
     num_envs = dof_position.shape[0]
-    fingertip_position = fingertip_state[:, :, 0:3]
 
     obs_buf = torch.cat([
         dof_position,
         dof_velocity,
         fingertip_state.reshape(num_envs, -1),
-        fingertip_position.reshape(num_envs, -1),
+        desired_fingertip_position.reshape(num_envs, -1),
         object_state[:, 0:7], # pose
         desired_object_poses,
         actions
