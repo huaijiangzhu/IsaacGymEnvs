@@ -455,8 +455,15 @@ class TrifingerNYU(VecTask):
         while curr_history_length < self._state_history_len:
             # add tensors to history list
             print(self._rigid_body_state.shape)
-            self._fingertips_frames_state_history.append(self._rigid_body_state[:, fingertip_handles_indices])
-            self._object_state_history.append(self._actors_root_state[object_indices])
+            fingertip_state = self._rigid_body_state[:, fingertip_handles_indices]
+            object_state = self._actors_root_state[object_indices]
+            desired_fingertip_position = compute_desired_fingertip_position(
+                object_state,
+                self._desired_fingertip_position_local
+            )
+            self._fingertips_frames_state_history.append(fingertip_state)
+            self._object_state_history.append(object_state)
+            self._desired_fingertip_position_history.append(desired_fingertip_position)
             # update current history length
             curr_history_length += 1
 
@@ -747,6 +754,8 @@ class TrifingerNYU(VecTask):
             self._object_state_history[1],
             self._fingertips_frames_state_history[0],
             self._fingertips_frames_state_history[1],
+            self._desired_fingertip_position_history[0],
+            self._desired_fingertip_position_history[1],
             self.cfg["env"]["reward_terms"]["keypoints_dist"]["activate"]
         )
 
@@ -1351,6 +1360,8 @@ def compute_trifinger_reward(
         last_object_state: torch.Tensor,
         fingertip_state: torch.Tensor,
         last_fingertip_state: torch.Tensor,
+        desired_fingertip_position: torch.Tensor,
+        last_desired_fingertip_position: torch.Tensor,
         use_keypoints: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
 
@@ -1365,16 +1376,21 @@ def compute_trifinger_reward(
 
     # Reward for finger reaching the object
 
+    # # distance from each finger to the centroid of the object, shape (N, 3).
+    # curr_norms = torch.stack([
+    #     torch.norm(fingertip_state[:, i, 0:3] - object_state[:, 0:3], p=2, dim=-1)
+    #     for i in range(3)
+    # ], dim=-1)
+    # # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
+    # prev_norms = torch.stack([
+    #     torch.norm(last_fingertip_state[:, i, 0:3] - last_object_state[:, 0:3], p=2, dim=-1)
+    #     for i in range(3)
+    # ], dim=-1)
+
     # distance from each finger to the centroid of the object, shape (N, 3).
-    curr_norms = torch.stack([
-        torch.norm(fingertip_state[:, i, 0:3] - object_state[:, 0:3], p=2, dim=-1)
-        for i in range(3)
-    ], dim=-1)
+    curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
     # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
-    prev_norms = torch.stack([
-        torch.norm(last_fingertip_state[:, i, 0:3] - last_object_state[:, 0:3], p=2, dim=-1)
-        for i in range(3)
-    ], dim=-1)
+    prev_norms = torch.norm(last_fingertip_state[:, :, 0:3] - last_desired_fingertip_position, p=2, dim=-1)
 
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_reward = finger_reach_object_weight * ft_sched_val * (curr_norms - prev_norms).sum(dim=-1)
