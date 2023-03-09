@@ -1371,7 +1371,6 @@ def compute_trifinger_reward(
     # Reward penalising finger movement
 
     fingertip_vel = (fingertip_state[:, :, 0:3] - last_fingertip_state[:, :, 0:3]) / dt
-
     finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
     # Reward for finger reaching the object
@@ -1393,7 +1392,10 @@ def compute_trifinger_reward(
     prev_norms = torch.norm(last_fingertip_state[:, :, 0:3] - last_desired_fingertip_position, p=2, dim=-1)
 
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
-    finger_reach_object_reward = finger_reach_object_weight * ft_sched_val * (curr_norms - prev_norms).sum(dim=-1)
+    # finger_reach_object_reward = finger_reach_object_weight * ft_sched_val * (curr_norms - prev_norms).sum(dim=-1)
+    # finger_reach_object_reward = -10 * ft_sched_val * curr_norms.sum(dim=-1)
+    # finger_reach_object_reward = finger_reach_object_weight * (curr_norms - prev_norms).sum(dim=-1)
+    finger_reach_object_reward = 0 * finger_reach_object_weight * (curr_norms - prev_norms).sum(dim=-1)
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])
@@ -1437,7 +1439,7 @@ def compute_trifinger_reward(
     info: Dict[str, torch.Tensor] = {
         'finger_movement_penalty': finger_movement_penalty,
         'finger_reach_object_reward': finger_reach_object_reward,
-        'pose_reward': finger_reach_object_reward,
+        'pose_reward': pose_reward,
         'reward': total_reward,
     }
 
