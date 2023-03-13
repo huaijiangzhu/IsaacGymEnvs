@@ -78,6 +78,7 @@ class TrifingerDimensions(enum.Enum):
     JointPositionDim = 9
     JointVelocityDim = 9
     JointTorqueDim = 9
+    ContactStateDim = 3
     # generalized coordinates
     GeneralizedCoordinatesDim = JointPositionDim
     GeneralizedVelocityDim = JointVelocityDim
@@ -284,6 +285,10 @@ class TrifingerNYU(VecTask):
             low=np.array([0.01, 0.03, 0.0001] * _dims.NumFingers.value, dtype=np.float32),
             high=np.array([1.0, 3.0, 0.01] * _dims.NumFingers.value, dtype=np.float32),
         ),
+        "contact_state": SimpleNamespace(
+            low=np.zeros(_dims.ContactStateDim.value, dtype=np.float32),
+            high=np.ones(_dims.ContactStateDim.value, dtype=np.float32),
+        )
     }
     # limits of the object (mapped later: str -> torch.tensor)
     _object_limits: dict = {
@@ -324,10 +329,25 @@ class TrifingerNYU(VecTask):
         # safety torque check on the joint motors.
         "safety_damping": [0.08, 0.08, 0.04] * _dims.NumFingers.value
     }
-    action_dim = _dims.JointTorqueDim.value
+
+    # action_dim = _dims.JointTorqueDim.values
 
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
         self.cfg = cfg
+
+        # determine action dimension
+        if self.cfg["env"]["command_mode"] == "position":
+            # action space is joint positions
+            self.action_dim = self._dims.JointPositionDim.value
+        elif self.cfg["env"]["command_mode"] == "torque":
+            # action space is joint torque
+            self.action_dim = self._dims.JointTorqueDim.value
+        elif self.cfg["env"]["command_mode"] == "torque_contact":
+            # action space is joint torque
+            self.action_dim =self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
+        else:
+            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
+            raise ValueError(msg)
 
         self.obs_spec = {
             "joint_position": self._dims.GeneralizedCoordinatesDim.value,
@@ -619,6 +639,16 @@ class TrifingerNYU(VecTask):
             # action space is joint torque
             self._action_scale.low = self._robot_limits["joint_torque"].low
             self._action_scale.high = self._robot_limits["joint_torque"].high
+        elif self.cfg["env"]["command_mode"] == "torque_contact":
+            # action space is joint torque
+            self._action_scale.low = torch.cat([
+                    self._robot_limits["joint_torque"].low,
+                    self._robot_limits["contact_state"].low
+                ])
+            self._action_scale.high = torch.cat([
+                    self._robot_limits["joint_torque"].high,
+                    self._robot_limits["contact_state"].high
+                ])
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position']."
             raise ValueError(msg)
@@ -739,6 +769,8 @@ class TrifingerNYU(VecTask):
         self.reset_buf[:] = 0.
 
         self.rew_buf[:], self.reset_buf[:], log_dict = compute_trifinger_reward(
+            actions,
+            self.cfg["env"]["command_mode"],
             self.obs_buf,
             self.reset_buf,
             self.progress_buf,
@@ -1056,26 +1088,28 @@ class TrifingerNYU(VecTask):
         # if normalized_action is true, then denormalize them.
         if self.cfg["env"]["normalize_action"]:
             # TODO: Default action should correspond to normalized value of 0.
-            action_transformed = unscale_transform(
+            self.action_transformed = unscale_transform(
                 self.actions,
                 lower=self._action_scale.low,
                 upper=self._action_scale.high
             )
         else:
-            action_transformed = self.actions
+            self.action_transformed = self.actions
 
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
-            computed_torque = action_transformed
+            computed_torque = self.action_transformed
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
-            desired_dof_position = action_transformed
+            desired_dof_position = self.action_transformed
             # compute torque to apply
             computed_torque = self._robot_dof_gains["stiffness"] * (desired_dof_position - self._dof_position)
             computed_torque -= self._robot_dof_gains["damping"] * self._dof_velocity
+        elif self.cfg["env"]["command_mode"] == 'torque_contact':
+            computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
         else:
-            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position']."
+            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
         # apply clamping of computed torque to actuator limits
         applied_torque = saturate(
@@ -1104,7 +1138,7 @@ class TrifingerNYU(VecTask):
         self.randomize_buf += 1
 
         self.compute_observations()
-        self.compute_reward(self.actions)
+        self.compute_reward(self.action_transformed)
 
         # check termination conditions (success only)
         self._check_termination()
@@ -1345,6 +1379,8 @@ def gen_keypoints(pose: torch.Tensor, num_keypoints: int = 8, size: Tuple[float,
 
 @torch.jit.script
 def compute_trifinger_reward(
+        actions: torch.Tensor,
+        command_mode: str,
         obs_buf: torch.Tensor,
         reset_buf: torch.Tensor,
         progress_buf: torch.Tensor,
@@ -1366,36 +1402,28 @@ def compute_trifinger_reward(
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
 
     ft_sched_start = 0
-    ft_sched_end = 5e7
+    ft_sched_end = 5e7     
 
-    # Reward penalising finger movement
+    # Reward penalizing finger movement
 
     fingertip_vel = (fingertip_state[:, :, 0:3] - last_fingertip_state[:, :, 0:3]) / dt
     finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
     # Reward for finger reaching the object
 
-    # # distance from each finger to the centroid of the object, shape (N, 3).
-    # curr_norms = torch.stack([
-    #     torch.norm(fingertip_state[:, i, 0:3] - object_state[:, 0:3], p=2, dim=-1)
-    #     for i in range(3)
-    # ], dim=-1)
-    # # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
-    # prev_norms = torch.stack([
-    #     torch.norm(last_fingertip_state[:, i, 0:3] - last_object_state[:, 0:3], p=2, dim=-1)
-    #     for i in range(3)
-    # ], dim=-1)
-
     # distance from each finger to the centroid of the object, shape (N, 3).
     curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
     # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
     prev_norms = torch.norm(last_fingertip_state[:, :, 0:3] - last_desired_fingertip_position, p=2, dim=-1)
 
-    ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
-    # finger_reach_object_reward = finger_reach_object_weight * ft_sched_val * (curr_norms - prev_norms).sum(dim=-1)
-    # finger_reach_object_reward = -10 * ft_sched_val * curr_norms.sum(dim=-1)
-    # finger_reach_object_reward = finger_reach_object_weight * (curr_norms - prev_norms).sum(dim=-1)
-    finger_reach_object_reward = 0 * finger_reach_object_weight * (curr_norms - prev_norms).sum(dim=-1)
+    if command_mode == 'torque_contact':
+        finger_reach_object_progress = actions[:, 9:] * (curr_norms - prev_norms)
+    else:
+        ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+        finger_reach_object_progress = ft_sched_val * (curr_norms - prev_norms)
+
+    finger_reach_object_reward = finger_reach_object_weight * finger_reach_object_progress.sum(dim=-1)
+
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])
