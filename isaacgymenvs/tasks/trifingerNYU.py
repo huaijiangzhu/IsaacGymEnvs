@@ -50,6 +50,9 @@ from typing import Deque, Dict, Tuple, Union
 import enum
 import numpy as np
 
+from isaacgymenvs.learning.cvae import VAE
+
+
 # ################### #
 # Dimensions of robot #
 # ################### #
@@ -407,6 +410,15 @@ class TrifingerNYU(VecTask):
             cam_target = gymapi.Vec3(0.0, 0.0, 0.0)
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
+        # grasp_net
+        self.graspnet = VAE(
+            encoder_layer_sizes=[9, 32, 64],
+            latent_size=12,
+            decoder_layer_sizes=[64, 32, 9],
+            conditional=True,
+            cond_size=7).to(self.device)
+        self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
+        self.graspnet.eval()
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -813,13 +825,16 @@ class TrifingerNYU(VecTask):
         fingertip_handles_indices = list(self._fingertips_handles.values())
         object_indices = self.gym_indices["object"]
         # update state histories
-        self._fingertips_frames_state_history.appendleft(self._rigid_body_state[:, fingertip_handles_indices])
-        self._object_state_history.appendleft(self._actors_root_state[object_indices])
-
-        # compute desired fingertip position in the world frame
+        fingertip_state = self._rigid_body_state[:, fingertip_handles_indices]
+        self._fingertips_frames_state_history.appendleft(fingertip_state)
+        object_state = self._actors_root_state[object_indices]
+        self._object_state_history.appendleft(object_state)
+        # predict desired fingertip position and transform it into the world frame
+        desired_fingertip_position_local = self.graspnet.inference(
+            torch.rand([self.num_envs, 12]).to(self.device), object_state[:, :7])
         desired_fingertip_position = compute_desired_fingertip_position(
-            self._object_state_history[0], 
-            self._desired_fingertip_position_local
+            object_state,
+            desired_fingertip_position_local.reshape((self.num_envs, 3, 3))
         )
         self._desired_fingertip_position_history.appendleft(desired_fingertip_position)
 
@@ -828,10 +843,10 @@ class TrifingerNYU(VecTask):
             self.cfg["env"]["asymmetric_obs"],
             self._dof_position,
             self._dof_velocity,
-            self._object_state_history[0],
+            object_state,
             self._desired_object_poses_buf,
             self.actions,
-            self._fingertips_frames_state_history[0],
+            fingertip_state,
             desired_fingertip_position,
             joint_torque,
             tip_wrench,
