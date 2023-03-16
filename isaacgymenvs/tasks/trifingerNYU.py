@@ -267,6 +267,10 @@ class TrifingerNYU(VecTask):
             low=np.array([-0.4, -0.4, 0], dtype=np.float32),
             high=np.array([0.4, 0.4, 0.5], dtype=np.float32),
         ),
+        "fingertip_position_diff": SimpleNamespace(
+            low=np.full(3, -8e-4, dtype=np.float32),
+            high=np.full(3, 8e-4, dtype=np.float32),
+        ),
         "fingertip_orientation": SimpleNamespace(
             low=-np.ones(4, dtype=np.float32),
             high=np.ones(4, dtype=np.float32),
@@ -347,7 +351,9 @@ class TrifingerNYU(VecTask):
             self.action_dim = self._dims.JointTorqueDim.value
         elif self.cfg["env"]["command_mode"] == "torque_contact":
             # action space is joint torque
-            self.action_dim =self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
+            self.action_dim = self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
+        elif self.cfg["env"]["command_mode"] == "fingertip_diff":
+            self.action_dim = self._dims.NumFingers.value * 3
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
@@ -411,12 +417,13 @@ class TrifingerNYU(VecTask):
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
         # grasp_net
+        self.graspnet_latent_size = 512
         self.graspnet = VAE(
-            encoder_layer_sizes=[9, 32, 64],
-            latent_size=12,
-            decoder_layer_sizes=[64, 32, 9],
-            conditional=True,
-            cond_size=7).to(self.device)
+                encoder_layer_sizes=[9, 32, 64, 128, 256],
+                latent_size=self.graspnet_latent_size,
+                decoder_layer_sizes=[256, 128, 64, 32, 9],
+                conditional=True,
+                cond_size=7).to(self.device)
         self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
         self.graspnet.eval()
 
@@ -464,10 +471,12 @@ class TrifingerNYU(VecTask):
         actor_root_state_tensor = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         rigid_body_tensor = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        jacobian = self.gym.acquire_jacobian_tensor(self.sim, "robot")
         # refresh the buffer (to copy memory?)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_jacobian_tensors(self.sim)
         # create wrapper tensors for reference (consider everything as pointer to actual memory)
         # DOF
         self._dof_state = gymtorch.wrap_tensor(dof_state_tensor).view(self.num_envs, -1, 2)
@@ -477,11 +486,13 @@ class TrifingerNYU(VecTask):
         self._rigid_body_state = gymtorch.wrap_tensor(rigid_body_tensor).view(self.num_envs, -1, 13)
         # root actors
         self._actors_root_state = gymtorch.wrap_tensor(actor_root_state_tensor).view(-1, 13)
+        # jacobian
+        self._jacobian = gymtorch.wrap_tensor(jacobian)
         # frames history
         action_dim = sum(self.action_spec.values())
         self._last_action = torch.zeros(self.num_envs, action_dim, dtype=torch.float, device=self.device)
-        fingertip_handles_indices = list(self._fingertips_handles.values())
         object_indices = self.gym_indices["object"]
+        fingertip_handles_indices = list(self._fingertips_handles.values())
         # timestep 0 is current tensor
         curr_history_length = 0
         while curr_history_length < self._state_history_len:
@@ -661,6 +672,10 @@ class TrifingerNYU(VecTask):
                     self._robot_limits["joint_torque"].high,
                     self._robot_limits["contact_state"].high
                 ])
+        elif self.cfg["env"]["command_mode"] == "fingertip_diff":
+            # assuming control freq 250 Hz
+            self._action_scale.low = self._robot_limits["fingertip_position_diff"].low.repeat(self._dims.NumFingers.value)
+            self._action_scale.high = self._robot_limits["fingertip_position_diff"].high.repeat(self._dims.NumFingers.value)
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position']."
             raise ValueError(msg)
@@ -810,6 +825,7 @@ class TrifingerNYU(VecTask):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_jacobian_tensors(self.sim)
 
         if self.cfg["env"]["enable_ft_sensors"] or self.cfg["env"]["asymmetric_obs"]:
             self.gym.refresh_dof_force_tensor(self.sim)
@@ -831,7 +847,7 @@ class TrifingerNYU(VecTask):
         self._object_state_history.appendleft(object_state)
         # predict desired fingertip position and transform it into the world frame
         desired_fingertip_position_local = self.graspnet.inference(
-            torch.rand([self.num_envs, 12]).to(self.device), object_state[:, :7])
+            torch.rand([self.num_envs, self.graspnet_latent_size]).to(self.device), object_state[:, :7])
         desired_fingertip_position = compute_desired_fingertip_position(
             object_state,
             desired_fingertip_position_local.reshape((self.num_envs, 3, 3))
@@ -1123,6 +1139,18 @@ class TrifingerNYU(VecTask):
             computed_torque -= self._robot_dof_gains["damping"] * self._dof_velocity
         elif self.cfg["env"]["command_mode"] == 'torque_contact':
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
+        elif self.cfg["env"]["command_mode"] == 'fingertip_diff':
+            fingertip_handles_indices = list(self._fingertips_handles.values())
+            jacobian_fingertip_linear = self._jacobian[:, fingertip_handles_indices, :3, :]
+            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
+                self.num_envs, 
+                3 * self._dims.NumFingers.value, 
+                self._dims.GeneralizedCoordinatesDim.value)
+        
+            fingertip_position_diff = self.action_transformed.reshape((self.num_envs, 9, 1))
+            jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
+            computed_torque = torch.squeeze(jacobian_transpose @ fingertip_position_diff, dim=2)
+
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
@@ -1434,7 +1462,8 @@ def compute_trifinger_reward(
     if command_mode == 'torque_contact':
         finger_reach_object_progress = actions[:, 9:] * (curr_norms - prev_norms)
     else:
-        ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+        # ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+        ft_sched_val = 1.0
         finger_reach_object_progress = ft_sched_val * (curr_norms - prev_norms)
 
     finger_reach_object_reward = finger_reach_object_weight * finger_reach_object_progress.sum(dim=-1)
