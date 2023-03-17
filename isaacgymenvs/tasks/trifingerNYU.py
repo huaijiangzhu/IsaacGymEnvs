@@ -417,11 +417,11 @@ class TrifingerNYU(VecTask):
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
         # grasp_net
-        self.graspnet_latent_size = 512
+        self.graspnet_latent_size = 16
         self.graspnet = VAE(
-                encoder_layer_sizes=[9, 32, 64, 128, 256],
+                encoder_layer_sizes=[9, 128],
                 latent_size=self.graspnet_latent_size,
-                decoder_layer_sizes=[256, 128, 64, 32, 9],
+                decoder_layer_sizes=[128, 9],
                 conditional=True,
                 cond_size=7).to(self.device)
         self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
