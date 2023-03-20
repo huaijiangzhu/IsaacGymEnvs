@@ -462,18 +462,11 @@ class TrifingerNYU(VecTask):
         self._desired_fingertip_position_local = torch.zeros((self.num_envs, 3, 3), device=self.device, dtype=torch.float)
         # get force torque sensor if enabled
         if self.cfg["env"]["enable_ft_sensors"] or self.cfg["env"]["asymmetric_obs"]:
-            # # joint torque
-            # dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
-            # self._dof_torque = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs,
-            #                                                                self._dims.JointTorqueDim.value)
-            # # force-torque sensor
+            # force-torque sensor
             num_ft_dims = self._dims.NumFingers.value * self._dims.WrenchDim.value
-            # sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
-            # self._ft_sensors_values = gymtorch.wrap_tensor(sensor_tensor).view(self.num_envs, num_ft_dims)
-
             sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
             self._ft_sensors_values = gymtorch.wrap_tensor(sensor_tensor).view(self.num_envs, num_ft_dims)
-
+            # joint torques
             dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
             self._dof_torque = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self._dims.JointTorqueDim.value)
 
@@ -806,6 +799,7 @@ class TrifingerNYU(VecTask):
         self.rew_buf[:] = 0.
         self.reset_buf[:] = 0.
 
+        
         self.rew_buf[:], self.reset_buf[:], log_dict = compute_trifinger_reward(
             actions,
             self.cfg["env"]["command_mode"],
@@ -986,20 +980,6 @@ class TrifingerNYU(VecTask):
         for idx in range(1, self._state_history_len):
             self._fingertips_frames_state_history[idx][instances] = 0.0
 
-    def _sample_desired_fingertip_positions(self, instances: torch.Tensor, distribution: str):
-        """Sample desired fingertip positions in the object frame
-
-        Type of distribution: ["default", "random", "none"]
-             - "default" means that pose is default configuration.
-             - "random" means that pose is randomly sampled on the table.
-             - "none" means no resetting of object pose between episodes.
-
-        Args:
-            instances: A tensor constraining indices of environment instances to reset.
-            distribution: Name of distribution to sample initial state from: ['default', 'random']
-        """
-
-        pass
     def _sample_object_poses(self, instances: torch.Tensor, distribution: str):
         """Sample poses for the cube.
 
@@ -1465,7 +1445,6 @@ def compute_trifinger_reward(
     ft_sched_end = 5e7     
 
     # Reward penalizing finger movement
-
     fingertip_vel = (fingertip_state[:, :, 0:3] - last_fingertip_state[:, :, 0:3]) / dt
     finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
@@ -1476,15 +1455,24 @@ def compute_trifinger_reward(
     # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
     prev_norms = torch.norm(last_fingertip_state[:, :, 0:3] - last_desired_fingertip_position, p=2, dim=-1)
 
-    if command_mode == 'torque_contact':
-        finger_reach_object_progress = actions[:, 9:] * (curr_norms - prev_norms)
-    else:
-        ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
-        # ft_sched_val = 1.0
-        finger_reach_object_progress = ft_sched_val * (curr_norms - prev_norms)
+    curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
+    prev_fingertip_center_norms = torch.norm(torch.mean(last_fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
+    fingertip_center_progress = curr_fingertip_center_norms - prev_fingertip_center_norms
 
-    finger_reach_object_reward = finger_reach_object_weight * finger_reach_object_progress.sum(dim=-1)
+    # not_in_contact = curr_norms > 0.04
+    # indices = torch.prod(not_in_contact, dim=-1).nonzero() # env indices where all three fingers are not in contact
+    # fingertip_center_progress[indices] = 0
 
+    finger_reach_object_reward = finger_reach_object_weight * fingertip_center_progress
+
+    # if command_mode == 'torque_contact':
+    #     finger_reach_object_progress = actions[:, 9:] * (curr_norms - prev_norms)
+    # else:
+    #     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+    #     # ft_sched_val = 1.0
+    #     finger_reach_object_progress = ft_sched_val * (curr_norms - prev_norms)
+
+    # finger_reach_object_reward = finger_reach_object_weight * finger_reach_object_progress.sum(dim=-1)
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])
@@ -1499,7 +1487,6 @@ def compute_trifinger_reward(
         pose_reward = object_dist_weight * dt * keypoints_kernel_sum
 
     else:
-
         # Reward for object distance
         object_dist = torch.norm(object_state[:, 0:3] - desired_object_poses_buf[:, 0:3], p=2, dim=-1)
         object_dist_reward = object_dist_weight * dt * lgsk_kernel(object_dist, scale=50., eps=2.)
