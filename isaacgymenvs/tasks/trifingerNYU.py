@@ -1448,42 +1448,24 @@ def compute_trifinger_reward(
     fingertip_vel = (fingertip_state[:, :, 0:3] - last_fingertip_state[:, :, 0:3]) / dt
     finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
+    # # Reward grasp metric
+    # fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
+    # finger_reach_object_reward = finger_reach_object_weight * fingertip_center_norms
+
     # Reward for finger reaching the object
-
-    # distance from each finger to the centroid of the object, shape (N, 3).
     curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
-    # distance from each finger to the centroid of the object in the last timestep, shape (N, 3).
     prev_norms = torch.norm(last_fingertip_state[:, :, 0:3] - last_desired_fingertip_position, p=2, dim=-1)
-
-    curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
-    prev_fingertip_center_norms = torch.norm(torch.mean(last_fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
-    fingertip_center_progress = curr_fingertip_center_norms - prev_fingertip_center_norms
-
-    # not_in_contact = curr_norms > 0.04
-    # indices = torch.prod(not_in_contact, dim=-1).nonzero() # env indices where all three fingers are not in contact
-    # fingertip_center_progress[indices] = 0
-
-    finger_reach_object_reward = finger_reach_object_weight * fingertip_center_progress
-
-    # if command_mode == 'torque_contact':
-    #     finger_reach_object_progress = actions[:, 9:] * (curr_norms - prev_norms)
-    # else:
-    #     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
-    #     # ft_sched_val = 1.0
-    #     finger_reach_object_progress = ft_sched_val * (curr_norms - prev_norms)
-
-    # finger_reach_object_reward = finger_reach_object_weight * finger_reach_object_progress.sum(dim=-1)
+    ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+    finger_reach_object_rate = curr_norms - prev_norms
+    finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
     if use_keypoints:
+        
         object_keypoints = gen_keypoints(object_state[:, 0:7])
         goal_keypoints = gen_keypoints(desired_object_poses_buf[:, 0:7])
-
         delta = object_keypoints - goal_keypoints
-
         dist_l2 = torch.norm(delta, p=2, dim=-1)
-
         keypoints_kernel_sum = lgsk_kernel(dist_l2, scale=30., eps=2.).mean(dim=-1)
-
         pose_reward = object_dist_weight * dt * keypoints_kernel_sum
 
     else:
@@ -1492,7 +1474,6 @@ def compute_trifinger_reward(
         object_dist_reward = object_dist_weight * dt * lgsk_kernel(object_dist, scale=50., eps=2.)
 
         # Reward for object rotation
-
         # extract quaternion orientation
         quat_a = object_state[:, 3:7]
         quat_b = desired_object_poses_buf[:, 3:7]
