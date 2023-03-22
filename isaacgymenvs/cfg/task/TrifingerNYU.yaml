@@ -16,7 +16,7 @@ env:
   clipActions: 1.0
 
   task_difficulty: -1
-  enable_ft_sensors: true
+  enable_ft_sensors: false
   asymmetric_obs: true
   normalize_obs: true
 
