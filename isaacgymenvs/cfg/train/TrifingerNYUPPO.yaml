@@ -86,6 +86,6 @@ params:
             name: None
     player:
       deterministic: true
-      games_num: 1000000
+      games_num: 80
       print_stats: false
     num_actors: ${....task.env.numEnvs}
