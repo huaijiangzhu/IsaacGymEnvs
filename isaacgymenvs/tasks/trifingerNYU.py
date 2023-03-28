@@ -882,6 +882,7 @@ class TrifingerNYU(VecTask):
                 upper=self._observations_scale.high
             )
 
+
     def reset_idx(self, env_ids):
 
         # randomization can happen only at reset time, since it can reset actor positions on GPU
@@ -1106,6 +1107,9 @@ class TrifingerNYU(VecTask):
             self.gym.simulate(self.sim)
 
         self.actions = actions.clone().to(self.device)
+
+        # add action noise
+        # self.actions += 0.05 * torch.rand_like(self.actions)
 
         # if normalized_action is true, then denormalize them.
         if self.cfg["env"]["normalize_action"]:
@@ -1440,9 +1444,12 @@ def compute_trifinger_reward(
         prev_desired_fingertip_position: torch.Tensor,
         use_keypoints: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    
+    # hack to get testing metrics
+    TEST = False
 
     ft_sched_start = 0
-    ft_sched_end = 5e7     
+    ft_sched_end = 5e7
 
     # Reward penalizing finger movement
     fingertip_vel = (fingertip_state[:, :, 0:3] - prev_fingertip_state[:, :, 0:3]) / dt
@@ -1486,22 +1493,28 @@ def compute_trifinger_reward(
 
         pose_reward = object_dist_reward + object_rot_reward
 
-    total_reward = (
-            finger_movement_penalty
-            + finger_reach_object_reward
-            + pose_reward
-    )
-
-    # reset agents
-    reset = torch.zeros_like(reset_buf)
-    reset = torch.where(progress_buf >= episode_length - 1, torch.ones_like(reset_buf), reset)
-
-    info: Dict[str, torch.Tensor] = {
+    if TEST:
+        total_reward = pose_reward
+        info: Dict[str, torch.Tensor] = {
+        'pose_reward': pose_reward,
+        'reward': total_reward,
+        }
+    else:
+        total_reward = (
+                finger_movement_penalty
+                + finger_reach_object_reward
+                + pose_reward
+        )
+        info: Dict[str, torch.Tensor] = {
         'finger_movement_penalty': finger_movement_penalty,
         'finger_reach_object_reward': finger_reach_object_reward,
         'pose_reward': pose_reward,
         'reward': total_reward,
-    }
+        }
+
+    # reset agents
+    reset = torch.zeros_like(reset_buf)
+    reset = torch.where(progress_buf >= episode_length - 1, torch.ones_like(reset_buf), reset)
 
     return total_reward, reset, info
 
@@ -1541,7 +1554,7 @@ def compute_trifinger_observations_states(
         dof_velocity,
         fingertip_state.reshape(num_envs, -1),
         desired_fingertip_position.reshape(num_envs, -1),
-        object_state[:, 0:7], # pose
+        object_state[:, 0:7],
         desired_object_poses,
         actions
     ], dim=-1)
