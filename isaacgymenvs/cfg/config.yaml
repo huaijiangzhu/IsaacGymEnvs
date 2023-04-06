@@ -40,7 +40,7 @@ checkpoint: ''
 multi_gpu: False
 
 wandb_activate: False
-wandb_group: ''
+wandb_group: 'trifinger_with_grasp_rwd'
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
 wandb_project: 'trifinger_isaac'
