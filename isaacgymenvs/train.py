@@ -66,7 +66,6 @@ def launch_rlg_hydra(cfg: DictConfig):
         cfg.checkpoint = to_absolute_path(cfg.checkpoint)
 
     cfg_dict = omegaconf_to_dict(cfg)
-    print_dict(cfg_dict)
 
     # set numpy formatting for printing only
     set_np_formatting()
@@ -95,7 +94,6 @@ def launch_rlg_hydra(cfg: DictConfig):
             resume="allow",
             monitor_gym=True,
         )
-
     def create_env_thunk(**kwargs):
         envs = isaacgymenvs.make(
             cfg.seed, 

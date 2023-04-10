@@ -144,6 +144,7 @@ class CommonPlayer(players.PpoPlayerContinuous):
                         break
 
         print(sum_rewards)
+        print("std mean", torch.std_mean(cr[done_indices]))
         if print_game_res:
             print('av reward:', sum_rewards / games_played * n_game_life, 'av steps:', sum_steps / games_played * n_game_life, 'winrate:', sum_game_res / games_played * n_game_life)
         else:

@@ -40,7 +40,7 @@ checkpoint: ''
 multi_gpu: False
 
 wandb_activate: False
-wandb_group: 'trifinger_with_grasp_rwd'
+wandb_group: 'trifinger_grasp_rwd'
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
 wandb_project: 'trifinger_isaac'
@@ -50,7 +50,7 @@ capture_video_len: 200
 force_render: True
 
 # disables rendering
-headless: False
+headless: True
 
 # set default task and default training config based on task
 defaults:

@@ -39,6 +39,8 @@ def make(
     # reuse existing config
     else:
         cfg_dict = omegaconf_to_dict(cfg.task)
+        # pass some useful params
+        cfg_dict["test"] = cfg.test
 
     create_rlgpu_env = get_rlgames_env_creator(
         seed=seed,
