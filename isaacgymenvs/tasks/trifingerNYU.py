@@ -424,15 +424,15 @@ class TrifingerNYU(VecTask):
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
         # grasp_net
-        self.graspnet_latent_size = 16
-        self.graspnet = VAE(
-                encoder_layer_sizes=[9, 128],
-                latent_size=self.graspnet_latent_size,
-                decoder_layer_sizes=[128, 9],
-                conditional=True,
-                cond_size=7).to(self.device)
-        self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
-        self.graspnet.eval()
+        # self.graspnet_latent_size = 16
+        # self.graspnet = VAE(
+        #         encoder_layer_sizes=[9, 128],
+        #         latent_size=self.graspnet_latent_size,
+        #         decoder_layer_sizes=[128, 9],
+        #         conditional=True,
+        #         cond_size=7).to(self.device)
+        # self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
+        # self.graspnet.eval()
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -851,8 +851,8 @@ class TrifingerNYU(VecTask):
         object_state = self._actors_root_state[object_indices]
         self._object_state_history.appendleft(object_state)
         # predict desired fingertip position and transform it into the world frame
-        desired_fingertip_position_local = self.graspnet.inference(
-            torch.rand([self.num_envs, self.graspnet_latent_size]).to(self.device), object_state[:, :7])
+        # desired_fingertip_position_local = self.graspnet.inference(
+        #     torch.rand([self.num_envs, self.graspnet_latent_size]).to(self.device), object_state[:, :7])
         desired_fingertip_position = compute_desired_fingertip_position(
             object_state,
             self._desired_fingertip_position_local # or desired_fingertip_position_local.reshape((self.num_envs, 3, 3))
