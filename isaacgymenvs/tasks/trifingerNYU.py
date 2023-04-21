@@ -1135,8 +1135,8 @@ class TrifingerNYU(VecTask):
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
         elif self.cfg["env"]["command_mode"] == 'fingertip_diff':
             # calculate jacobians
-            jacobian_fingertip_linear = self._jacobian[:, self._fingertip_indices, :3, :]
-            jacobian_fingertip_full = self._jacobian[:, self._fingertip_indices, :, :]
+            fid = [idx - 1 for idx in self._fingertip_indices]
+            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
             jacobian_fingertip_linear = jacobian_fingertip_linear.view(
                 self.num_envs, 
                 3 * self._dims.NumFingers.value, 
