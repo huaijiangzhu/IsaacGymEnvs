@@ -501,7 +501,6 @@ class TrifingerNYU(VecTask):
         curr_history_length = 0
         while curr_history_length < self._state_history_len:
             # add tensors to history list
-            print(self._rigid_body_state.shape)
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
             object_state = self._actors_root_state[object_indices]
             desired_fingertip_position = compute_desired_fingertip_position(
@@ -1272,8 +1271,7 @@ class TrifingerNYU(VecTask):
         self.gym.set_asset_rigid_shape_properties(trifinger_asset, trifinger_props)
         # extract the frame handles
         for frame_name in self._fingertips_handles.keys():
-            self._fingertips_handles[frame_name] = self.gym.find_asset_rigid_body_index(trifinger_asset,
-                                                                                         frame_name)
+            self._fingertips_handles[frame_name] = self.gym.find_asset_rigid_body_index(trifinger_asset, frame_name)
             # check valid handle
             if self._fingertips_handles[frame_name] == gymapi.INVALID_HANDLE:
                 msg = f"Invalid handle received for frame: `{frame_name}`."
