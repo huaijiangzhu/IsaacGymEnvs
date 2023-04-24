@@ -3,7 +3,6 @@
 task_name: ${task.name}
 # experiment name. defaults to name of training config
 experiment: ''
-
 # if set to positive integer, overrides the default number of environments
 num_envs: ''
 
@@ -40,7 +39,7 @@ checkpoint: ''
 multi_gpu: False
 
 wandb_activate: False
-wandb_group: 'trifinger_grasp_rwd'
+wandb_group: 'trifinger_task_space'
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
 wandb_project: 'trifinger_isaac'

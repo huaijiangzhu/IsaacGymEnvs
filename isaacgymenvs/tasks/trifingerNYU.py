@@ -268,8 +268,8 @@ class TrifingerNYU(VecTask):
             high=np.array([0.4, 0.4, 0.5], dtype=np.float32),
         ),
         "fingertip_position_diff": SimpleNamespace(
-            low=np.full(3, -0.5, dtype=np.float32),
-            high=np.full(3, 0.5, dtype=np.float32),
+            low=np.full(3, -0.05, dtype=np.float32),
+            high=np.full(3, 0.05, dtype=np.float32),
         ),
         "fingertip_orientation": SimpleNamespace(
             low=-np.ones(4, dtype=np.float32),
@@ -340,8 +340,8 @@ class TrifingerNYU(VecTask):
     _robot_task_space_gains = {
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
-        "stiffness": [200.0, 200.0, 200.0] * _dims.NumFingers.value,
-        "damping": [0.1, 0.1, 0.1] * _dims.NumFingers.value
+        "stiffness": [300.0, 300.0, 300.0] * _dims.NumFingers.value,
+        "damping": [5.0, 5.0, 5.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -1147,13 +1147,14 @@ class TrifingerNYU(VecTask):
             fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
             task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed
-            task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
+            # task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
+        
         # apply clamping of computed torque to actuator limits
         applied_torque = saturate(
             computed_torque,
@@ -1453,20 +1454,20 @@ def compute_trifinger_reward(
     fingertip_vel = (fingertip_state[:, :, 0:3] - prev_fingertip_state[:, :, 0:3]) / dt
     finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
-    # # Reward for finger reaching the object
-    # curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
-    # prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
-    # ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
-    # finger_reach_object_rate = curr_norms - prev_norms
-    # finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+    # Reward for finger reaching the object
+    curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
+    prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
+    ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
+    finger_reach_object_rate = curr_norms - prev_norms
+    finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
-    # Reward grasp metric
-    # grasp_sched_val = 0.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 1.0
-    grasp_sched_val = 1.0
-    curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
-    prev_fingertip_center_norms = torch.norm(torch.mean(prev_fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
-    fingertip_center_rate = curr_fingertip_center_norms - prev_fingertip_center_norms
-    finger_reach_object_reward = grasp_sched_val * finger_reach_object_weight * fingertip_center_rate
+    # # Reward grasp metric
+    # # grasp_sched_val = 0.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 1.0
+    # grasp_sched_val = 1.0
+    # curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
+    # prev_fingertip_center_norms = torch.norm(torch.mean(prev_fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
+    # fingertip_center_rate = curr_fingertip_center_norms - prev_fingertip_center_norms
+    # finger_reach_object_reward = grasp_sched_val * finger_reach_object_weight * fingertip_center_rate
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])

@@ -40,7 +40,6 @@ from hydra.utils import to_absolute_path
 import gym
 
 from isaacgymenvs.utils.reformat import omegaconf_to_dict, print_dict
-
 from isaacgymenvs.utils.utils import set_np_formatting, set_seed
 
 ## OmegaConf & Hydra Config
