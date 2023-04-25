@@ -20,7 +20,6 @@ env:
   asymmetric_obs: true
   normalize_obs: true
 
-  apply_safety_damping: true
   command_mode: fingertip_diff
   normalize_action: true
   cube_obs_keypoints: true

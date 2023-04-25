@@ -268,8 +268,8 @@ class TrifingerNYU(VecTask):
             high=np.array([0.4, 0.4, 0.5], dtype=np.float32),
         ),
         "fingertip_position_diff": SimpleNamespace(
-            low=np.full(3, -0.05, dtype=np.float32),
-            high=np.full(3, 0.05, dtype=np.float32),
+            low=np.full(3, -0.02, dtype=np.float32),
+            high=np.full(3, 0.02, dtype=np.float32),
         ),
         "fingertip_orientation": SimpleNamespace(
             low=-np.ones(4, dtype=np.float32),
@@ -340,8 +340,8 @@ class TrifingerNYU(VecTask):
     _robot_task_space_gains = {
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
-        "stiffness": [300.0, 300.0, 300.0] * _dims.NumFingers.value,
-        "damping": [5.0, 5.0, 5.0] * _dims.NumFingers.value
+        "stiffness": [150.0, 150.0, 150.0] * _dims.NumFingers.value,
+        "damping": [1.0, 1.0, 1.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -1147,31 +1147,21 @@ class TrifingerNYU(VecTask):
             fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
             task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed
-            # task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
+            task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
-        
+                
         # apply clamping of computed torque to actuator limits
         applied_torque = saturate(
             computed_torque,
             lower=self._robot_limits["joint_torque"].low,
             upper=self._robot_limits["joint_torque"].high
         )
-        # apply safety damping and clamping of the action torque if enabled
-        if self.cfg["env"]["apply_safety_damping"]:
-            # apply damping by joint velocity
-            applied_torque -= self._robot_dof_gains["safety_damping"] * self._dof_velocity
-            # clamp input
-            applied_torque = saturate(
-                applied_torque,
-                lower=self._robot_limits["joint_torque"].low,
-                upper=self._robot_limits["joint_torque"].high
-            )
-        # set computed torque to simulator buffer.
+
         self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(applied_torque))
 
     def post_physics_step(self):
