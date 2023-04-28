@@ -51,6 +51,7 @@ import enum
 import numpy as np
 
 from isaacgymenvs.learning.cvae import VAE
+from isaacgymenvs.learning.fista import QP, FISTA
 
 
 # ################### #
@@ -292,6 +293,15 @@ class TrifingerNYU(VecTask):
             low=np.array([0.01, 0.03, 0.0001] * _dims.NumFingers.value, dtype=np.float32),
             high=np.array([1.0, 3.0, 0.01] * _dims.NumFingers.value, dtype=np.float32),
         ),
+        # used if we want to have end-effector stiffness/damping in the action space`
+        "fingertip_stiffness": SimpleNamespace(
+            low=np.array([100.0, 100.0, 100.0] * _dims.NumFingers.value, dtype=np.float32),
+            high=np.array([200.0, 200.0, 200.0] * _dims.NumFingers.value, dtype=np.float32),
+        ),
+        "fingertip_damping": SimpleNamespace(
+            low=np.array([0.1, 0.1, 0.1] * _dims.NumFingers.value, dtype=np.float32),
+            high=np.array([5.0, 5.0, 5.0] * _dims.NumFingers.value, dtype=np.float32),
+        ),
         "contact_state": SimpleNamespace(
             low=np.zeros(_dims.ContactStateDim.value, dtype=np.float32),
             high=np.ones(_dims.ContactStateDim.value, dtype=np.float32),
@@ -340,8 +350,8 @@ class TrifingerNYU(VecTask):
     _robot_task_space_gains = {
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
-        "stiffness": [150.0, 150.0, 150.0] * _dims.NumFingers.value,
-        "damping": [1.0, 1.0, 1.0] * _dims.NumFingers.value
+        "stiffness": [180.0, 180.0, 180.0] * _dims.NumFingers.value,
+        "damping": [2.0, 2.0, 2.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -361,6 +371,8 @@ class TrifingerNYU(VecTask):
             self.action_dim = self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
         elif self.cfg["env"]["command_mode"] == "fingertip_diff":
             self.action_dim = self._dims.NumFingers.value * 3
+        elif self.cfg["env"]["command_mode"] == "variable_impedance":
+            self.action_dim = self._dims.NumFingers.value * 9
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
             raise ValueError(msg)
@@ -433,6 +445,30 @@ class TrifingerNYU(VecTask):
         #         cond_size=7).to(self.device)
         # self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
         # self.graspnet.eval()
+
+        # Fista
+        num_batches = self.num_envs
+        num_vars = 9
+        num_eqc = 1
+
+        # quadratic cost
+        Q = torch.zeros(num_batches, num_vars, num_vars)
+        Q[:, torch.arange(num_vars), torch.arange(num_vars)] = 1
+        q = torch.zeros(num_batches, num_vars)
+
+        # equality constraints
+        rho = 0. # set to zero if no equality constraint is needed
+        A = torch.zeros(num_batches, num_eqc, num_vars)
+        b = torch.zeros(num_batches, num_eqc)
+
+        # box constraints
+        lb = torch.zeros(num_batches, num_vars)
+        ub = torch.zeros(num_batches, num_vars)
+        lb[:], ub[:] = -3., 3.
+
+        self.qp = QP(num_batches, num_vars, num_eqc, device=self.device)
+        self.qp.set_data(Q, q, A, b, rho, lb, ub)
+        self.fista = FISTA(self.qp, device=self.device)
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -1150,6 +1186,11 @@ class TrifingerNYU(VecTask):
             task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
+
+            self.qp.reset()
+            max_it = 100
+            for i in range(max_it):
+                self.qp.step()
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
