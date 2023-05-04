@@ -1190,7 +1190,7 @@ class TrifingerNYU(VecTask):
             self.qp.reset()
             max_it = 100
             for i in range(max_it):
-                self.qp.step()
+                self.fista.step()
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
