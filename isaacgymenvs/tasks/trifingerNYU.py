@@ -1187,10 +1187,11 @@ class TrifingerNYU(VecTask):
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
-            self.qp.reset()
-            max_it = 100
-            for i in range(max_it):
-                self.fista.step()
+            # # QP
+            # self.qp.reset()
+            # max_it = 100
+            # for i in range(max_it):
+            #     self.fista.step()
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
