@@ -50,7 +50,6 @@ from typing import Deque, Dict, Tuple, Union
 import enum
 import numpy as np
 
-from isaacgymenvs.learning.cvae import VAE
 from isaacgymenvs.learning.fista import QP, FISTA
 
 
