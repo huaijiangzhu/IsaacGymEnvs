@@ -21,7 +21,7 @@ env:
   normalize_obs: true
 
   command_mode: fingertip_diff
-  normalize_action: true
+  normalize_action: false
   cube_obs_keypoints: true
   reset_distribution:
     object_initial_state:

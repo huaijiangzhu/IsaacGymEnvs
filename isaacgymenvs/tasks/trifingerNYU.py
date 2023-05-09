@@ -251,7 +251,7 @@ class TrifingerNYU(VecTask):
             # matches those on the real robot
             low=np.array([-0.33, 0.0, -2.7] * _dims.NumFingers.value, dtype=np.float32),
             high=np.array([1.0, 1.57, 0.0] * _dims.NumFingers.value, dtype=np.float32),
-            default=np.array([0.0, 0.9, -2.0] * _dims.NumFingers.value, dtype=np.float32),
+            default=np.array([-0.08, 1.15, -1.5] * _dims.NumFingers.value, dtype=np.float32), # [0.0, 0.9, -2.0] 
         ),
         "joint_velocity": SimpleNamespace(
             low=np.full(_dims.JointVelocityDim.value, -_max_velocity_radps, dtype=np.float32),
@@ -349,8 +349,8 @@ class TrifingerNYU(VecTask):
     _robot_task_space_gains = {
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
-        "stiffness": [180.0, 180.0, 180.0] * _dims.NumFingers.value,
-        "damping": [2.0, 2.0, 2.0] * _dims.NumFingers.value
+        "stiffness": [200.0, 200.0, 200.0] * _dims.NumFingers.value,
+        "damping": [3.0, 3.0, 3.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
