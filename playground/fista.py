@@ -197,12 +197,9 @@ class FISTA(torch.nn.Module):
 
         self.tk = 1.0
         self.k = 0
-        
-        if step_size is not None:
-            self.step_size = step_size * torch.ones(prob.num_batches).to(device)
-        else:
-            self.step_size = self.compute_step_size().to(device)
 
+        if step_size is not None:
+            self.step_size = step_size * torch.ones(self.prob.num_batches).to(self.device)
         # jitted functions
         self.grad_descent = torch.jit.script(_grad_descent)
         self.accelerated_update = torch.jit.script(_accelerated_update)
@@ -213,6 +210,7 @@ class FISTA(torch.nn.Module):
         self.prob.reset()
         self.tk = 1.0
         self.k = 0
+        self.step_size = self.compute_step_size().to(self.device)
     
     @torch.no_grad()     
     def compute_step_size(self):
