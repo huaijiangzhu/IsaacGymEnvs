@@ -22,10 +22,13 @@ class QP(object):
             self.friction_coeff = None
         
         # internal states
-        self.yk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
-        self.yk1 = torch.zeros(self.num_batches, self.num_vars).to(self.device)
         self.xk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.yk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        # # if it's a force problem, initialize the forces as the unit contact normal
+        # self.xk[:, 2:3] = 1.0
+        # self.yk[:, 2:3] = 1.0
         self.xk1 = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.yk1 = torch.zeros(self.num_batches, self.num_vars).to(self.device)
         self.zk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
         self.grad = torch.zeros(self.num_batches, self.num_vars).to(self.device)
 
@@ -108,6 +111,82 @@ class QP(object):
     @torch.no_grad()
     def update_grad(self):
         self.grad = self.compute_grad(self.yk, self.hessian, self.aux2)
+
+
+class ForceQP(object):
+    @torch.no_grad()
+    def __init__(self, num_batches, num_vars, friction_coeff=None, device=torch.device("cuda:0")):
+        self.device = device
+        
+        # problem params
+        self.num_vars = num_vars
+        self.num_batches = num_batches
+
+        if isinstance(friction_coeff, torch.Tensor):
+            self.friction_coeff = friction_coeff.to(device).view(num_batches, 1)
+        elif isinstance(friction_coeff, float):
+            self.friction_coeff = friction_coeff * torch.ones(num_batches, 1).to(device)
+        else:
+            self.friction_coeff = None
+        
+        # internal states
+        self.xk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.yk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        # # if it's a force problem, initialize the forces as the unit contact normal
+        # self.xk[:, 2:3] = 1.0
+        # self.yk[:, 2:3] = 1.0
+        self.xk1 = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.yk1 = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.zk = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+        self.grad = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+
+        self.ydiff = torch.zeros(self.num_batches, self.num_vars).to(self.device)
+
+        # jitted function
+        self.compute_grad = torch.jit.script(_compute_grad)
+
+    @torch.no_grad()
+    def reset(self):
+        self.yk.zero_()
+        self.yk1.zero_()
+        self.xk.zero_()
+        self.xk1.zero_()
+        self.grad.zero_()
+        self.ydiff.zero_()
+        
+    @torch.no_grad()
+    def set_data(self, Q, q, lb, ub):
+        self.Q = Q.to(self.device)
+        self.q = q.to(self.device)
+        
+        self.lb = lb.to(self.device)
+        self.ub = ub.to(self.device)
+        
+        self.hessian = 2 * self.Q
+        
+    @torch.no_grad()
+    def update(self):
+        pass
+    
+    @torch.no_grad()
+    def compute_obj_unconstrained(self, xk):
+        def _batchless(Q, q, x):
+            obj = x @ Q @ x + q @ x
+            return obj
+        
+        return functorch.vmap(_batchless)(self.Q, self.q, xk)
+    
+    @torch.no_grad()
+    def compute_obj(self, xk):
+        def _batchless(Q, q, x):
+            obj = x @ Q @ x + q @ x
+            return obj
+        
+        return functorch.vmap(_batchless)(self.Q, self.q, xk)
+    
+    @torch.no_grad()
+    def update_grad(self):
+        self.grad = self.compute_grad(self.yk, self.hessian, self.q)
 
 class FISTA(torch.nn.Module):
     @torch.no_grad()
@@ -199,21 +278,23 @@ def _proj_friction_cone(forces: torch.Tensor, friction_coeff: torch.Tensor):
     norm_ft = torch.norm(ft, dim=1, keepdim=True)
     
     # if the forces are not unilateral, set them to zeros
-    not_unilateral = (norm_ft * mu < -fn) + (fn < 0)
+    not_unilateral = fn <= 0 # hard-coded threshold
     reshaped_forces[not_unilateral.view(-1)] = 0
     
-    # if the forces are outside the friction cone, project them onto the cone
-    inside_cone = norm_ft <= mu * fn
-    
+    # if the forces are outside the friction cone, project them onto the cone    
     beta = torch.zeros_like(reshaped_forces)
     gamma = torch.zeros_like(reshaped_forces)
     numerator = (mu ** 2) * norm_ft + (mu * fn)
     denominator = ((mu ** 2) + 1) * norm_ft    
     beta[:, :2] = (numerator / denominator).repeat(1, 2)
     gamma[:, 2:] = (mu * norm_ft + fn) / ((mu ** 2) + 1.0)
+
+    # for forces that are either inside the cone or not unilateral, no change needs to be made
+    inside_cone = norm_ft <= mu * fn
+    no_change = inside_cone + not_unilateral
     
-    beta[inside_cone.view(-1)] = 1.
-    gamma[inside_cone.view(-1)] = 0.
+    beta[no_change.view(-1)] = 1.
+    gamma[no_change.view(-1)] = 0.
     projected_forces = beta * reshaped_forces + gamma
     
     return projected_forces.view(num_batches, num_vars)

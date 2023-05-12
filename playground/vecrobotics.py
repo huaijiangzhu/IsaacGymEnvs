@@ -67,3 +67,17 @@ def world2local(
     position_local = -bmv(rot_inv, local_frame_pos) + bmv(rot_inv, position_world)
 
     return position_local
+
+@torch.jit.script
+def vec2skew_sym_mat(vec: torch.Tensor):
+    batch_size, _ = vec.shape
+    mat = torch.zeros(batch_size, 3, 3, device=vec.device)
+    
+    mat[:, 0, 1] = -vec[:, 2]
+    mat[:, 0, 2] = vec[:, 1]
+    mat[:, 1, 0] = vec[:, 2]
+    mat[:, 1, 2] = -vec[:, 0]
+    mat[:, 2, 0] = -vec[:, 1]
+    mat[:, 2, 1] = vec[:, 0]
+    
+    return mat
