@@ -283,6 +283,10 @@ class TrifingerNYU(VecTask):
             low=np.full(_dims.WrenchDim.value, -1.0, dtype=np.float32),
             high=np.full(_dims.WrenchDim.value, 1.0, dtype=np.float32),
         ),
+        "fingertip_force": SimpleNamespace(
+            low=np.full(3, -10.0, dtype=np.float32),
+            high=np.full(3, 10.0, dtype=np.float32),
+        ),
         # used if we want to have joint stiffness/damping as parameters`
         "joint_stiffness": SimpleNamespace(
             low=np.array([1.0, 1.0, 1.0] * _dims.NumFingers.value, dtype=np.float32),
@@ -370,6 +374,8 @@ class TrifingerNYU(VecTask):
             self.action_dim = self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
         elif self.cfg["env"]["command_mode"] == "fingertip_diff":
             self.action_dim = self._dims.NumFingers.value * 3
+        elif self.cfg["env"]["command_mode"] == "fingertip_diff_force":
+            self.action_dim = self._dims.NumFingers.value * 6
         elif self.cfg["env"]["command_mode"] == "variable_impedance":
             self.action_dim = self._dims.NumFingers.value * 9
         else:
@@ -714,6 +720,14 @@ class TrifingerNYU(VecTask):
             # assuming control freq 250 Hz
             self._action_scale.low = self._robot_limits["fingertip_position_diff"].low.repeat(self._dims.NumFingers.value)
             self._action_scale.high = self._robot_limits["fingertip_position_diff"].high.repeat(self._dims.NumFingers.value)
+        elif self.cfg["env"]["command_mode"] == "fingertip_diff_force":
+            # assuming control freq 250 Hz
+            pos_diff_low = self._robot_limits["fingertip_position_diff"].low.repeat(self._dims.NumFingers.value)
+            pos_diff_high = self._robot_limits["fingertip_position_diff"].high.repeat(self._dims.NumFingers.value)
+            force_low = self._robot_limits["fingertip_force"].low.repeat(self._dims.NumFingers.value)
+            force_high = self._robot_limits["fingertip_force"].high.repeat(self._dims.NumFingers.value)
+            self._action_scale.low = torch.cat([pos_diff_low, force_low])
+            self._action_scale.high = torch.cat([pos_diff_high, force_high])
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position']."
             raise ValueError(msg)
@@ -1168,7 +1182,8 @@ class TrifingerNYU(VecTask):
             computed_torque -= self._robot_dof_gains["damping"] * self._dof_velocity
         elif self.cfg["env"]["command_mode"] == 'torque_contact':
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
-        elif self.cfg["env"]["command_mode"] == 'fingertip_diff':
+        elif (self.cfg["env"]["command_mode"] == 'fingertip_diff' or
+              self.cfg["env"]["command_mode"] == 'fingertip_diff_force'):
             # calculate jacobians
             fid = [idx - 1 for idx in self._fingertip_indices]
             jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
@@ -1181,16 +1196,14 @@ class TrifingerNYU(VecTask):
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
             fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
-            task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed
+            task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed[:, :9]
             task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
+
+            if self.cfg["env"]["command_mode"] == 'fingertip_diff_force':
+                task_space_force += self.action_transformed[:, 9:18]
+
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
-
-            # # QP
-            # self.qp.reset()
-            # max_it = 100
-            # for i in range(max_it):
-            #     self.fista.step()
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
