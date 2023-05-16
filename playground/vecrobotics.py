@@ -4,20 +4,11 @@ import torch
 def bmv(mat: torch.Tensor, vec: torch.Tensor):
     return torch.einsum('bij, bj -> bi', mat, vec)
 
-# def quat2mat2(quat: torch.Tensor):
-#     x, y, z, w = torch.unbind(quat, dim=-1)
-#     return torch.vmap(_quat2mat)(x, y, z, w)
-
-# def _quat2mat(x, y, z, w):
-#     x2, y2, z2 = x**2, y**2, z**2
-#     wx, wy, wz = w*x, w*y, w*z
-#     xy, xz, yz = x*y, x*z, y*z
-#     rotation_matrix = torch.stack([
-#         1-2*y2-2*z2, 2*(xy-wz), 2*(xz+wy),
-#         2*(xy+wz), 1-2*x2-2*z2, 2*(yz-wx),
-#         2*(xz-wy), 2*(yz+wx), 1-2*x2-2*y2]
-#     )
-#     return rotation_matrix.view(3, 3)
+@torch.jit.script
+def stacked_bmv(mat: torch.Tensor, vec: torch.Tensor):
+    batch_size, dmat1, dmat2 = mat.shape
+    batch_size, dvec_stacked = vec.shape # dvec_stacked should be multiples of dmat2
+    return bmv(mat, vec.view(-1, dmat2)).view(-1, dvec_stacked) 
 
 @torch.jit.script
 def quat2mat(quat: torch.Tensor):
