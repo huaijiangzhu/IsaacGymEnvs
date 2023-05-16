@@ -1,5 +1,5 @@
 from typing import List
-from vecrobotics import *
+from .vecrobotics import *
 
 @torch.jit.script
 def get_cube_contact_normals(ftip_pos: torch.Tensor, threshold: float = 0.0435):

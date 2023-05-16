@@ -50,8 +50,9 @@ from typing import Deque, Dict, Tuple, Union
 import enum
 import numpy as np
 
-from isaacgymenvs.learning.fista import QP, FISTA
-
+from isaacgymenvs.qp.fista import ForceQP, FISTA
+from isaacgymenvs.qp.qp_utils import *
+from isaacgymenvs.qp.vecrobotics import *
 
 # ################### #
 # Dimensions of robot #
@@ -440,40 +441,14 @@ class TrifingerNYU(VecTask):
             cam_target = gymapi.Vec3(0.0, 0.0, 0.0)
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
-        # grasp_net
-        # self.graspnet_latent_size = 16
-        # self.graspnet = VAE(
-        #         encoder_layer_sizes=[9, 128],
-        #         latent_size=self.graspnet_latent_size,
-        #         decoder_layer_sizes=[128, 9],
-        #         conditional=True,
-        #         cond_size=7).to(self.device)
-        # self.graspnet.load_state_dict(torch.load(os.path.join(project_dir, "./", "graspnet")))
-        # self.graspnet.eval()
-
-        # Fista
-        num_batches = self.num_envs
+        # construct force QP
         num_vars = 9
-        num_eqc = 1
-
-        # quadratic cost
-        Q = torch.zeros(num_batches, num_vars, num_vars)
-        Q[:, torch.arange(num_vars), torch.arange(num_vars)] = 1
-        q = torch.zeros(num_batches, num_vars)
-
-        # equality constraints
-        rho = 0. # set to zero if no equality constraint is needed
-        A = torch.zeros(num_batches, num_eqc, num_vars)
-        b = torch.zeros(num_batches, num_eqc)
-
-        # box constraints
-        lb = torch.zeros(num_batches, num_vars)
-        ub = torch.zeros(num_batches, num_vars)
-        lb[:], ub[:] = -3., 3.
-
-        self.qp = QP(num_batches, num_vars, num_eqc, device=self.device)
-        self.qp.set_data(Q, q, A, b, rho, lb, ub)
-        self.fista = FISTA(self.qp, device=self.device)
+        self.force_lb = -10 * torch.ones(self.num_envs, num_vars)
+        self.force_ub = 10 * torch.ones(self.num_envs, num_vars)
+        self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
+        self.qp_solver = FISTA(self.force_qp, device=self.device)
+        self.qp_cost_weights = [1, 200, 1e-4]
+        self.gravity = torch.tensor([0, 0, 9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -1194,6 +1169,7 @@ class TrifingerNYU(VecTask):
             
             # get fingertip states
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
+            fingertip_position = fingertip_state[:, :, 0:3]
             fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
             task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed[:, :9]
@@ -1201,7 +1177,27 @@ class TrifingerNYU(VecTask):
 
             if self.cfg["env"]["command_mode"] == 'fingertip_diff_force':
                 task_space_force += self.action_transformed[:, 9:18]
+            if self.cfg["env"]["enable_force_qp"]:
+                # set up force qp
+                max_it = 50
+                object_pose = self._object_state_history[0][:, 0:7]
+                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
+                                                                                    object_pose, 
+                                                                                    self.gravity,  
+                                                                                    self.qp_cost_weights)    
+                self.force_qp.set_data(Q, q, self.force_lb, self.force_ub)
+                self.qp_solver.reset()
+                for i in range(max_it):
+                    self.qp_solver.step()
+                ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
 
+                # convert force to the world frame
+                R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
+                ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
+                object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
+                ftip_force_des = stacked_bmv(object_orn, ftip_force_object_frame)
+                task_space_force += ftip_force_des
+                
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 

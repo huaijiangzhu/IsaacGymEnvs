@@ -1,7 +1,7 @@
 from typing import List
 from vecrobotics import *
 
-@torch.jit.script
+# @torch.jit.script
 def get_cube_contact_normals(ftip_pos: torch.Tensor, threshold: float = 0.0435):
     batch_size = len(ftip_pos)
     contact_normals = torch.zeros(batch_size, 3).to(ftip_pos.device)
@@ -18,7 +18,7 @@ def get_cube_contact_normals(ftip_pos: torch.Tensor, threshold: float = 0.0435):
     
     return contact_normals
 
-@torch.jit.script
+# @torch.jit.script
 def get_contact_frame_orn(contact_normals: torch.Tensor):
     # get the orientation of the contact frames expressed in the object frame
     z_axis = contact_normals
@@ -29,7 +29,7 @@ def get_contact_frame_orn(contact_normals: torch.Tensor):
     orn = torch.stack((x_axis, y_axis, z_axis), dim=2)
     return orn
 
-@torch.jit.script
+# @torch.jit.script
 def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, mg: torch.Tensor, weights: List[float]):
     # get ftip positin in the object frame
     batch_size, num_ftip, _ = ftip_pos.shape

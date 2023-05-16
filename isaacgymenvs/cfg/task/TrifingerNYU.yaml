@@ -21,11 +21,12 @@ env:
   normalize_obs: true
 
   command_mode: fingertip_diff
-  normalize_action: false
+  enable_force_qp: true
+  normalize_action: true
   cube_obs_keypoints: true
   reset_distribution:
     object_initial_state:
-      type: default
+      type: random
     robot_initial_state:
       dof_pos_stddev: 0.4
       dof_vel_stddev: 0.2
