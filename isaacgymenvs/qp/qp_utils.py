@@ -30,7 +30,7 @@ def get_contact_frame_orn(contact_normals: torch.Tensor):
     return orn
 
 @torch.jit.script
-def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, mg: torch.Tensor, weights: List[float]):
+def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, total_force_des: torch.Tensor, weights: List[float]):
     # get ftip positin in the object frame
     batch_size, num_ftip, _ = ftip_pos.shape
     num_vars = num_ftip * 3
@@ -57,7 +57,7 @@ def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, mg: tor
     Q[:, diag_idx, diag_idx] = Q[:, diag_idx, diag_idx].masked_fill_(mask, 1)
     
     object_orn = quat2mat(object_pose[:, 3:])
-    mg_local = bmv(object_orn.transpose(1,2), mg)
-    q = -2 * bmv(R_vstacked, mg_local)
+    total_force_des_object_frame = bmv(object_orn.transpose(1,2), total_force_des)
+    q = -2 * bmv(R_vstacked, total_force_des_object_frame)
     
     return Q, q, R_vstacked, pxR_vstacked, contact_normals

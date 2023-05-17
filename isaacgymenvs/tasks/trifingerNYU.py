@@ -443,12 +443,12 @@ class TrifingerNYU(VecTask):
 
         # construct force QP
         num_vars = 9
-        self.force_lb = -10 * torch.ones(self.num_envs, num_vars)
-        self.force_ub = 10 * torch.ones(self.num_envs, num_vars)
+        self.force_lb = -12 * torch.ones(self.num_envs, num_vars)
+        self.force_ub = 12 * torch.ones(self.num_envs, num_vars)
         self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
         self.qp_solver = FISTA(self.force_qp, device=self.device)
         self.qp_cost_weights = [1, 200, 1e-4]
-        self.gravity = torch.tensor([0, 0, 9.81]).repeat(self.num_envs, 1).to(self.device)
+        self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -1183,9 +1183,9 @@ class TrifingerNYU(VecTask):
                 object_pose = self._object_state_history[0][:, 0:7]
                 Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
                                                                                     object_pose, 
-                                                                                    self.gravity,  
+                                                                                    -0.08 * self.gravity,  
                                                                                     self.qp_cost_weights)    
-                self.force_qp.set_data(Q, q, self.force_lb, self.force_ub)
+                self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
                 self.qp_solver.reset()
                 for i in range(max_it):
                     self.qp_solver.step()
