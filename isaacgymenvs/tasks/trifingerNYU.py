@@ -306,9 +306,9 @@ class TrifingerNYU(VecTask):
             low=np.array([0.1, 0.1, 0.1] * _dims.NumFingers.value, dtype=np.float32),
             high=np.array([5.0, 5.0, 5.0] * _dims.NumFingers.value, dtype=np.float32),
         ),
-        "contact_state": SimpleNamespace(
-            low=np.zeros(_dims.ContactStateDim.value, dtype=np.float32),
-            high=np.ones(_dims.ContactStateDim.value, dtype=np.float32),
+        "object_acceleration": SimpleNamespace(
+            low=np.zeros(3, dtype=np.float32),
+            high=100 * np.ones(3, dtype=np.float32),
         )
     }
     # limits of the object (mapped later: str -> torch.tensor)
@@ -370,17 +370,17 @@ class TrifingerNYU(VecTask):
         elif self.cfg["env"]["command_mode"] == "torque":
             # action space is joint torque
             self.action_dim = self._dims.JointTorqueDim.value
-        elif self.cfg["env"]["command_mode"] == "torque_contact":
+        elif self.cfg["env"]["command_mode"] == "object_centric":
             # action space is joint torque
-            self.action_dim = self._dims.JointTorqueDim.value + self._dims.ContactStateDim.value
+            self.action_dim = self._dims.JointTorqueDim.value + 3
         elif self.cfg["env"]["command_mode"] == "fingertip_diff":
             self.action_dim = self._dims.NumFingers.value * 3
         elif self.cfg["env"]["command_mode"] == "fingertip_diff_force":
             self.action_dim = self._dims.NumFingers.value * 6
-        elif self.cfg["env"]["command_mode"] == "variable_impedance":
-            self.action_dim = self._dims.NumFingers.value * 9
+        elif self.cfg["env"]["command_mode"] == "fingertip_force":
+            self.action_dim = self._dims.NumFingers.value * 3
         else:
-            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
+            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'object_centric']."
             raise ValueError(msg)
 
         self.obs_spec = {
@@ -681,15 +681,15 @@ class TrifingerNYU(VecTask):
             # action space is joint torque
             self._action_scale.low = self._robot_limits["joint_torque"].low
             self._action_scale.high = self._robot_limits["joint_torque"].high
-        elif self.cfg["env"]["command_mode"] == "torque_contact":
+        elif self.cfg["env"]["command_mode"] == "object_centric":
             # action space is joint torque
             self._action_scale.low = torch.cat([
                     self._robot_limits["joint_torque"].low,
-                    self._robot_limits["contact_state"].low
+                    self._robot_limits["object_acceleration"].low
                 ])
             self._action_scale.high = torch.cat([
                     self._robot_limits["joint_torque"].high,
-                    self._robot_limits["contact_state"].high
+                    self._robot_limits["object_acceleration"].high
                 ])
         elif self.cfg["env"]["command_mode"] == "fingertip_diff":
             # assuming control freq 250 Hz
@@ -703,6 +703,9 @@ class TrifingerNYU(VecTask):
             force_high = self._robot_limits["fingertip_force"].high.repeat(self._dims.NumFingers.value)
             self._action_scale.low = torch.cat([pos_diff_low, force_low])
             self._action_scale.high = torch.cat([pos_diff_high, force_high])
+        elif self.cfg["env"]["command_mode"] == "fingertip_force":
+            self._action_scale.low = self._robot_limits["fingertip_force"].low.repeat(self._dims.NumFingers.value)
+            self._action_scale.high = self._robot_limits["fingertip_force"].high.repeat(self._dims.NumFingers.value)
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position']."
             raise ValueError(msg)
@@ -1149,47 +1152,6 @@ class TrifingerNYU(VecTask):
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
             computed_torque = self.action_transformed
-            if self.cfg["env"]["enable_force_qp"]:
-                # calculate jacobians
-                fid = [idx - 1 for idx in self._fingertip_indices]
-                jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
-                jacobian_fingertip_linear = jacobian_fingertip_linear.view(
-                    self.num_envs, 
-                    3 * self._dims.NumFingers.value, 
-                    self._dims.GeneralizedCoordinatesDim.value)
-                
-                # get fingertip/object states
-                fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
-                fingertip_position = fingertip_state[:, :, 0:3]
-                fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
-                object_pose = self._object_state_history[0][:, 0:7]
-                object_position = object_pose[:, 0:3]
-
-                # calculate desired total force
-                desired_object_position = self._desired_object_poses_buf[:, 0:3]
-                desired_total_force = desired_object_position - object_position
-                desired_total_force = 0.04 * desired_total_force / torch.norm(desired_total_force, dim=1, keepdim=True)
-
-                # set up and solve force qp
-                max_it = 50
-                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
-                                                                                    object_pose, 
-                                                                                    desired_total_force,  
-                                                                                    self.qp_cost_weights)    
-                self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
-                self.qp_solver.reset()
-                for i in range(max_it):
-                    self.qp_solver.step()
-                ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
-
-                # convert force to the world frame
-                R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
-                ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
-                object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
-                task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)
-                
-                jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
-                computed_torque += torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
@@ -1197,8 +1159,51 @@ class TrifingerNYU(VecTask):
             # compute torque to apply
             computed_torque = self._robot_dof_gains["stiffness"] * (desired_dof_position - self._dof_position)
             computed_torque -= self._robot_dof_gains["damping"] * self._dof_velocity
-        elif self.cfg["env"]["command_mode"] == 'torque_contact':
+
+        elif self.cfg["env"]["command_mode"] == 'object_centric':
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
+
+            # calculate jacobians
+            fid = [idx - 1 for idx in self._fingertip_indices]
+            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
+            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
+                self.num_envs, 
+                3 * self._dims.NumFingers.value, 
+                self._dims.GeneralizedCoordinatesDim.value)
+            
+            # get fingertip/object states
+            fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
+            fingertip_position = fingertip_state[:, :, 0:3]
+            fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
+            object_pose = self._object_state_history[0][:, 0:7]
+            object_position = object_pose[:, 0:3]
+
+            # calculate desired total force
+            desired_object_position = self._desired_object_poses_buf[:, 0:3]
+            desired_object_acceleration = self.action_transformed[:, self._dims.JointTorqueDim.value:] * (desired_object_position - object_position)
+            desired_total_force = 0.08 * desired_object_acceleration
+
+            # set up and solve force qp
+            max_it = 50
+            Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
+                                                                                object_pose, 
+                                                                                desired_total_force,  
+                                                                                self.qp_cost_weights)    
+            self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+            self.qp_solver.reset()
+            for i in range(max_it):
+                self.qp_solver.step()
+            ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
+
+            # convert force to the world frame
+            R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
+            ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
+            object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
+            task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)
+            
+            jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
+            computed_torque += torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
+
         elif (self.cfg["env"]["command_mode"] == 'fingertip_diff' or
               self.cfg["env"]["command_mode"] == 'fingertip_diff_force'):
             # calculate jacobians
@@ -1248,8 +1253,52 @@ class TrifingerNYU(VecTask):
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
+        elif self.cfg["env"]["command_mode"] == 'fingertip_force':
+            # calculate jacobians
+            fid = [idx - 1 for idx in self._fingertip_indices]
+            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
+            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
+                self.num_envs, 
+                3 * self._dims.NumFingers.value, 
+                self._dims.GeneralizedCoordinatesDim.value)
+            
+            # get fingertip states
+            fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
+            fingertip_position = fingertip_state[:, :, 0:3]
+            fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
+
+            task_space_force = self.action_transformed
+            if self.cfg["env"]["enable_force_qp"]:
+                # set up force qp
+                max_it = 50
+                object_pose = self._object_state_history[0][:, 0:7]
+                object_position = object_pose[:, 0:3]
+                desired_object_position = self._desired_object_poses_buf[:, 0:3]
+                desired_total_force = desired_object_position - object_position
+                desired_total_force = 0.08 * desired_total_force / torch.norm(desired_total_force, dim=1, keepdim=True)
+
+                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
+                                                                                    object_pose, 
+                                                                                    desired_total_force,  
+                                                                                    self.qp_cost_weights)    
+                self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+                self.qp_solver.reset()
+                for i in range(max_it):
+                    self.qp_solver.step()
+                ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
+
+                # convert force to the world frame
+                R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
+                ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
+                object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
+                ftip_force_des = stacked_bmv(object_orn, ftip_force_object_frame)
+                task_space_force = ftip_force_des
+                
+            jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
+            computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
+
         else:
-            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'torque_contact']."
+            msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'object_centric']."
             raise ValueError(msg)
                 
         # apply clamping of computed torque to actuator limits

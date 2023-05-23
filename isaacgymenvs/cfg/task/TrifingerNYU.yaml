@@ -15,13 +15,13 @@ env:
   clipObservations: 5.0
   clipActions: 1.0
 
-  task_difficulty: -1
+  task_difficulty: 3
   enable_ft_sensors: false
   asymmetric_obs: true
   normalize_obs: true
 
-  command_mode: fingertip_diff
-  enable_force_qp: true
+  command_mode: fingertip_force
+  enable_force_qp: false
   normalize_action: true
   cube_obs_keypoints: true
   reset_distribution:
