@@ -37,6 +37,7 @@ def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, total_f
 
     p = SE3_inverse_transform(object_pose.repeat_interleave(3, dim=0), ftip_pos.view(-1, 3))
     contact_normals = get_cube_contact_normals(p)
+    
     R = get_contact_frame_orn(contact_normals)
     R_vstacked = R.transpose(1, 2).reshape(-1, 3 * num_ftip, 3)
     Q1 = R_vstacked @ R_vstacked.transpose(1, 2)

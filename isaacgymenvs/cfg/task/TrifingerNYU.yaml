@@ -20,7 +20,7 @@ env:
   asymmetric_obs: true
   normalize_obs: true
 
-  command_mode: fingertip_force
+  command_mode: torque
   enable_force_qp: false
   normalize_action: true
   cube_obs_keypoints: true

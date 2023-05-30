@@ -234,6 +234,8 @@ class TrifingerNYU(VecTask):
     # Fingertip links state list([num. of instances, num. of fingers, 13]) where 13: (x, y, z, quat, v, omega)
     # The length of list is the history of the state: 0: t, 1: t-1, 2: t-2, ... step.
     _fingertips_frames_state_history: Deque[torch.Tensor] = deque(maxlen=_state_history_len)
+    # (Unscaled) action history
+    _action_history: Deque[torch.Tensor] = deque(maxlen=_state_history_len)
     # Object prim state [num. of instances, 13] where 13: (x, y, z, quat, v, omega)
     # The length of list is the history of the state: 0: t, 1: t-1, 2: t-2, ... step.
     _object_state_history: Deque[torch.Tensor] = deque(maxlen=_state_history_len)
@@ -252,7 +254,7 @@ class TrifingerNYU(VecTask):
             # matches those on the real robot
             low=np.array([-0.33, 0.0, -2.7] * _dims.NumFingers.value, dtype=np.float32),
             high=np.array([1.0, 1.57, 0.0] * _dims.NumFingers.value, dtype=np.float32),
-            default=np.array([-0.08, 1.15, -1.5] * _dims.NumFingers.value, dtype=np.float32), # [0.0, 0.9, -2.0] 
+            default=np.array([0.0, 0.9, -2.0] * _dims.NumFingers.value, dtype=np.float32), #  [-0.08, 1.15, -1.5]
         ),
         "joint_velocity": SimpleNamespace(
             low=np.full(_dims.JointVelocityDim.value, -_max_velocity_radps, dtype=np.float32),
@@ -285,8 +287,8 @@ class TrifingerNYU(VecTask):
             high=np.full(_dims.WrenchDim.value, 1.0, dtype=np.float32),
         ),
         "fingertip_force": SimpleNamespace(
-            low=np.full(3, -10.0, dtype=np.float32),
-            high=np.full(3, 10.0, dtype=np.float32),
+            low=np.full(3, -5.0, dtype=np.float32),
+            high=np.full(3, 5.0, dtype=np.float32),
         ),
         # used if we want to have joint stiffness/damping as parameters`
         "joint_stiffness": SimpleNamespace(
@@ -355,7 +357,7 @@ class TrifingerNYU(VecTask):
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
         "stiffness": [200.0, 200.0, 200.0] * _dims.NumFingers.value,
-        "damping": [3.0, 3.0, 3.0] * _dims.NumFingers.value
+        "damping": [5.0, 5.0, 5.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -448,7 +450,7 @@ class TrifingerNYU(VecTask):
         self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
         self.qp_solver = FISTA(self.force_qp, device=self.device)
         self.qp_cost_weights = [1, 200, 1e-4]
-        self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
+        # self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -1124,6 +1126,16 @@ class TrifingerNYU(VecTask):
         self._actors_root_state[goal_object_indices, 0:7] = self._desired_object_poses_buf[instances]
         # self._actors_root_state[goal_object_indices, 2] = -10
 
+    def get_fingertip_jacobian_linear(self):
+        # calculate jacobians
+        fid = [idx - 1 for idx in self._fingertip_indices]
+        jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
+        jacobian_fingertip_linear = jacobian_fingertip_linear.view(
+            self.num_envs, 
+            3 * self._dims.NumFingers.value, 
+            self._dims.GeneralizedCoordinatesDim.value)
+        return jacobian_fingertip_linear
+        
     def pre_physics_step(self, actions):
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
@@ -1148,6 +1160,11 @@ class TrifingerNYU(VecTask):
         else:
             self.action_transformed = self.actions
 
+        self._action_history.append(self.action_transformed.clone())
+
+        # calculate jacobians
+        jacobian_fingertip_linear = self.get_fingertip_jacobian_linear()
+
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
@@ -1162,14 +1179,6 @@ class TrifingerNYU(VecTask):
 
         elif self.cfg["env"]["command_mode"] == 'object_centric':
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
-
-            # calculate jacobians
-            fid = [idx - 1 for idx in self._fingertip_indices]
-            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
-            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
-                self.num_envs, 
-                3 * self._dims.NumFingers.value, 
-                self._dims.GeneralizedCoordinatesDim.value)
             
             # get fingertip/object states
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
@@ -1206,13 +1215,6 @@ class TrifingerNYU(VecTask):
 
         elif (self.cfg["env"]["command_mode"] == 'fingertip_diff' or
               self.cfg["env"]["command_mode"] == 'fingertip_diff_force'):
-            # calculate jacobians
-            fid = [idx - 1 for idx in self._fingertip_indices]
-            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
-            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
-                self.num_envs, 
-                3 * self._dims.NumFingers.value, 
-                self._dims.GeneralizedCoordinatesDim.value)
             
             # get fingertip states
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
@@ -1254,13 +1256,6 @@ class TrifingerNYU(VecTask):
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
         elif self.cfg["env"]["command_mode"] == 'fingertip_force':
-            # calculate jacobians
-            fid = [idx - 1 for idx in self._fingertip_indices]
-            jacobian_fingertip_linear = self._jacobian[:, fid, :3, :]
-            jacobian_fingertip_linear = jacobian_fingertip_linear.view(
-                self.num_envs, 
-                3 * self._dims.NumFingers.value, 
-                self._dims.GeneralizedCoordinatesDim.value)
             
             # get fingertip states
             fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
