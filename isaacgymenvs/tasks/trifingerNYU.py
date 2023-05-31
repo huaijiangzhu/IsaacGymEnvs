@@ -50,7 +50,7 @@ from typing import Deque, Dict, Tuple, Union
 import enum
 import numpy as np
 
-from isaacgymenvs.qp.fista import ForceQP, FISTA
+from isaacgymenvs.qp.fista import ForceQP, LocationQP, FISTA
 from isaacgymenvs.qp.qp_utils import *
 from isaacgymenvs.qp.vecrobotics import *
 
@@ -443,14 +443,19 @@ class TrifingerNYU(VecTask):
             cam_target = gymapi.Vec3(0.0, 0.0, 0.0)
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
-        # construct force QP
+        # construct QPs
         num_vars = 9
-        self.force_lb = -12 * torch.ones(self.num_envs, num_vars)
-        self.force_ub = 12 * torch.ones(self.num_envs, num_vars)
+        self.force_lb = -10 * torch.ones(self.num_envs, num_vars)
+        self.force_ub = 10 * torch.ones(self.num_envs, num_vars)
         self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
-        self.qp_solver = FISTA(self.force_qp, device=self.device)
-        self.qp_cost_weights = [1, 200, 1e-4]
-        # self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
+        self.force_qp_solver = FISTA(self.force_qp, device=self.device)
+
+        self.location_qp = LocationQP(self.num_envs, num_vars, device=self.device)
+        self.location_qp_solver = FISTA(self.location_qp, device=self.device)
+
+        self.force_qp_cost_weights = [1, 200, 1e-4]
+        self.location_qp_cost_weights = [100, 10]
+        self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
         # limits for robot
@@ -1162,13 +1167,39 @@ class TrifingerNYU(VecTask):
 
         self._action_history.append(self.action_transformed.clone())
 
-        # calculate jacobians
+        # prepare some quantities that might be needed
         jacobian_fingertip_linear = self.get_fingertip_jacobian_linear()
+        jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
+        fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
+        fingertip_position = fingertip_state[:, :, 0:3]
+        fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
+        object_pose = self._object_state_history[0][:, 0:7]
+        object_position = object_pose[:, 0:3]
+        desired_object_position = self._desired_object_poses_buf[:, 0:3]
 
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
             computed_torque = self.action_transformed
+            if self.cfg["env"]["enable_location_qp"]:
+                # set up location qp
+                max_it = 20
+                desired_fingertip_position = compute_desired_fingertip_position(object_pose, self._desired_fingertip_position_local)
+                Q, q = get_location_qp_data(fingertip_position, 
+                                            desired_fingertip_position, 
+                                            self.action_transformed, 
+                                            jacobian_fingertip_linear, 
+                                            self.location_qp_cost_weights)
+                
+                self.location_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+                self.location_qp_solver.reset()
+                for i in range(max_it):
+                    self.location_qp_solver.step()
+                task_space_force = self.location_qp_solver.prob.yk.clone()
+
+                # convert force to joint torques
+                computed_torque = bmv(jacobian_transpose, task_space_force)
+                
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
@@ -1181,14 +1212,6 @@ class TrifingerNYU(VecTask):
             computed_torque = self.action_transformed[:, :self._dims.JointTorqueDim.value]
             
             # get fingertip/object states
-            fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
-            fingertip_position = fingertip_state[:, :, 0:3]
-            fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
-            object_pose = self._object_state_history[0][:, 0:7]
-            object_position = object_pose[:, 0:3]
-
-            # calculate desired total force
-            desired_object_position = self._desired_object_poses_buf[:, 0:3]
             desired_object_acceleration = self.action_transformed[:, self._dims.JointTorqueDim.value:] * (desired_object_position - object_position)
             desired_total_force = 0.08 * desired_object_acceleration
 
@@ -1197,12 +1220,12 @@ class TrifingerNYU(VecTask):
             Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
                                                                                 object_pose, 
                                                                                 desired_total_force,  
-                                                                                self.qp_cost_weights)    
-            self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
-            self.qp_solver.reset()
+                                                                                self.force_qp_cost_weights)    
+            self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+            self.force_qp_solver.reset()
             for i in range(max_it):
-                self.qp_solver.step()
-            ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
+                self.force_qp_solver.step()
+            ftip_force_contact_frame = self.force_qp_solver.prob.yk.clone()
 
             # convert force to the world frame
             R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
@@ -1210,16 +1233,10 @@ class TrifingerNYU(VecTask):
             object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
             task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)
             
-            jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque += torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
         elif (self.cfg["env"]["command_mode"] == 'fingertip_diff' or
               self.cfg["env"]["command_mode"] == 'fingertip_diff_force'):
-            
-            # get fingertip states
-            fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
-            fingertip_position = fingertip_state[:, :, 0:3]
-            fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
             task_space_force = self._robot_task_space_gains["stiffness"] * self.action_transformed[:, :9]
             task_space_force -= self._robot_task_space_gains["damping"]  * fingertip_velocity
@@ -1229,21 +1246,18 @@ class TrifingerNYU(VecTask):
             if self.cfg["env"]["enable_force_qp"]:
                 # set up force qp
                 max_it = 50
-                object_pose = self._object_state_history[0][:, 0:7]
-                object_position = object_pose[:, 0:3]
-                desired_object_position = self._desired_object_poses_buf[:, 0:3]
                 desired_total_force = desired_object_position - object_position
                 desired_total_force = 0.08 * desired_total_force / torch.norm(desired_total_force, dim=1, keepdim=True)
 
                 Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
                                                                                     object_pose, 
                                                                                     desired_total_force,  
-                                                                                    self.qp_cost_weights)    
-                self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
-                self.qp_solver.reset()
+                                                                                    self.force_qp_cost_weights)    
+                self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+                self.force_qp_solver.reset()
                 for i in range(max_it):
-                    self.qp_solver.step()
-                ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
+                    self.force_qp_solver.step()
+                ftip_force_contact_frame = self.force_qp_solver.prob.yk.clone()
 
                 # convert force to the world frame
                 R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
@@ -1252,35 +1266,26 @@ class TrifingerNYU(VecTask):
                 ftip_force_des = stacked_bmv(object_orn, ftip_force_object_frame)
                 task_space_force += ftip_force_des
                 
-            jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
             computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
 
         elif self.cfg["env"]["command_mode"] == 'fingertip_force':
-            
-            # get fingertip states
-            fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
-            fingertip_position = fingertip_state[:, :, 0:3]
-            fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
 
             task_space_force = self.action_transformed
             if self.cfg["env"]["enable_force_qp"]:
                 # set up force qp
                 max_it = 50
-                object_pose = self._object_state_history[0][:, 0:7]
-                object_position = object_pose[:, 0:3]
-                desired_object_position = self._desired_object_poses_buf[:, 0:3]
                 desired_total_force = desired_object_position - object_position
                 desired_total_force = 0.08 * desired_total_force / torch.norm(desired_total_force, dim=1, keepdim=True)
 
                 Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data(fingertip_position, 
                                                                                     object_pose, 
                                                                                     desired_total_force,  
-                                                                                    self.qp_cost_weights)    
-                self.qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
-                self.qp_solver.reset()
+                                                                                    self.force_qp_cost_weights)    
+                self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+                self.force_qp_solver.reset()
                 for i in range(max_it):
-                    self.qp_solver.step()
-                ftip_force_contact_frame = self.qp_solver.prob.yk.clone()
+                    self.force_qp_solver.step()
+                ftip_force_contact_frame = self.force_qp_solver.prob.yk.clone()
 
                 # convert force to the world frame
                 R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)

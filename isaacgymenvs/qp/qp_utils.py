@@ -61,3 +61,27 @@ def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, total_f
     q = -2 * bmv(R_vstacked, total_force_des_object_frame)
     
     return Q, q, R_vstacked, pxR_vstacked, contact_normals
+
+@torch.jit.script
+def get_location_qp_data(ftip_pos: torch.Tensor, ftip_pos_des: torch.Tensor, torque_ref: torch.Tensor, jacobian: torch.Tensor, weights: List[float]):
+    batch_size, num_ftip, _ = ftip_pos.shape
+    num_vars = num_ftip * 3
+    num_vars = 9
+    diag_idx = torch.arange(num_vars)
+
+    jacobian_transpose = torch.transpose(jacobian, 1, 2)
+    Q1 = jacobian @ jacobian_transpose
+    q1 = -2 * bmv(jacobian_transpose, torque_ref)
+
+    ftip_pos_diff = ftip_pos_des - ftip_pos
+    task_space_force = torch.tensor([150, 150, 150] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff.reshape(batch_size, 9)
+    Q2 = torch.zeros_like(Q1)
+    Q2[:, diag_idx, diag_idx] = 1.
+    q2 = -2 * task_space_force
+
+    w1, w2 = weights
+    Q = w1*Q1 + w2*Q2
+    q = w1*q1 + w2*q2
+
+    return Q, q
+

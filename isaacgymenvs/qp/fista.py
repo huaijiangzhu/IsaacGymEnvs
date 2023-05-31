@@ -202,14 +202,6 @@ class QP(object):
         return functorch.vmap(_batchless)(self.A, self.b, xk)
     
     @torch.no_grad()
-    def compute_obj_unconstrained(self, xk):
-        def _batchless(Q, q, A, b, P, x):
-            obj = x @ Q @ x + q @ x
-            return obj
-        
-        return functorch.vmap(_batchless)(self.Q, self.q, self.A, self.b, self.Pk, xk)
-    
-    @torch.no_grad()
     def compute_obj(self, xk):
         def _batchless(Q, q, A, b, P, x):
             obj = x @ Q @ x + q @ x + self.rho * torch.norm(A @ x + self.aux2)
@@ -278,12 +270,59 @@ class ForceQP(object):
         pass
     
     @torch.no_grad()
-    def compute_obj_unconstrained(self, xk):
+    def compute_obj(self, xk):
         def _batchless(Q, q, x):
             obj = x @ Q @ x + q @ x
             return obj
         
         return functorch.vmap(_batchless)(self.Q, self.q, xk)
+    
+    @torch.no_grad()
+    def update_grad(self):
+        self.grad = self.compute_grad(self.yk, self.hessian, self.q)
+
+class LocationQP(object):
+    @torch.no_grad()
+    def __init__(self, batch_size, num_vars, device=torch.device("cuda:0")):
+        self.device = device
+        
+        # problem params
+        self.num_vars = num_vars
+        self.batch_size = batch_size
+        self.friction_coeff = None
+        
+        # internal states
+        self.xk = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+        self.yk = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+        self.xk1 = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+        self.yk1 = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+        self.zk = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+        self.grad = torch.zeros(self.batch_size, self.num_vars).to(self.device)
+
+        # jitted function
+        self.compute_grad = torch.jit.script(_compute_grad)
+
+    @torch.no_grad()
+    def reset(self):
+        self.yk.zero_()
+        self.yk1.zero_()
+        self.xk.zero_()
+        self.xk1.zero_()
+        self.grad.zero_()
+        
+    @torch.no_grad()
+    def set_data(self, Q, q, lb, ub):
+        self.Q = Q.to(self.device)
+        self.q = q.to(self.device)
+        
+        self.lb = lb.to(self.device)
+        self.ub = ub.to(self.device)
+        
+        self.hessian = 2 * self.Q
+        
+    @torch.no_grad()
+    def update(self):
+        pass
     
     @torch.no_grad()
     def compute_obj(self, xk):
