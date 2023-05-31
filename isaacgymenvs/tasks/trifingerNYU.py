@@ -1184,7 +1184,9 @@ class TrifingerNYU(VecTask):
             if self.cfg["env"]["enable_location_qp"]:
                 # set up location qp
                 max_it = 20
-                desired_fingertip_position = compute_desired_fingertip_position(object_pose, self._desired_fingertip_position_local)
+                env_id = 5
+                desired_fingertip_position = object_position.unsqueeze(1).repeat(1, 3, 1)
+                
                 Q, q = get_location_qp_data(fingertip_position, 
                                             desired_fingertip_position, 
                                             self.action_transformed, 
@@ -1199,7 +1201,10 @@ class TrifingerNYU(VecTask):
 
                 # convert force to joint torques
                 computed_torque = bmv(jacobian_transpose, task_space_force)
-                
+
+                # print('desired_ftip_pos', desired_fingertip_position[env_id])
+                # print('torque_ref', self.action_transformed[env_id])
+                # print('computed_torque', computed_torque[env_id])
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
