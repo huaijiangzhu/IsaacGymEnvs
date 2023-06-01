@@ -68,16 +68,28 @@ def get_location_qp_data(ftip_pos: torch.Tensor, ftip_pos_des: torch.Tensor, tor
     num_vars = num_ftip * 3
     num_vars = 9
     diag_idx = torch.arange(num_vars)
-
+    
     jacobian_transpose = torch.transpose(jacobian, 1, 2)
-    Q1 = jacobian @ jacobian_transpose
-    q1 = -2 * bmv(jacobian_transpose, torque_ref)
-
     ftip_pos_diff = (ftip_pos_des - ftip_pos).reshape(batch_size, 9)
     task_space_force = torch.tensor([100, 100, 200] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff
-    Q2 = torch.zeros_like(Q1)
+
+    Q1 = torch.zeros(batch_size, num_vars, num_vars).to(torque_ref.device)
+    Q1[:, diag_idx, diag_idx] = 1.
+    q1 = -2 * torque_ref
+
+    Q2 = torch.zeros(batch_size, num_vars, num_vars).to(torque_ref.device)
     Q2[:, diag_idx, diag_idx] = 1.
-    q2 = -2 * task_space_force
+    q2 = -2 * bmv(jacobian_transpose, task_space_force)
+
+    # jacobian_transpose = torch.transpose(jacobian, 1, 2)
+    # Q1 = jacobian @ jacobian_transpose
+    # q1 = -2 * bmv(jacobian_transpose, torque_ref)
+
+    # ftip_pos_diff = (ftip_pos_des - ftip_pos).reshape(batch_size, 9)
+    # task_space_force = torch.tensor([100, 100, 200] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff
+    # Q2 = torch.zeros_like(Q1)
+    # Q2[:, diag_idx, diag_idx] = 1.
+    # q2 = -2 * task_space_force
 
     w1, w2 = weights
     Q = w1*Q1 + w2*Q2

@@ -454,7 +454,7 @@ class TrifingerNYU(VecTask):
         self.location_qp_solver = FISTA(self.location_qp, device=self.device)
 
         self.force_qp_cost_weights = [1, 200, 1e-4]
-        self.location_qp_cost_weights = [100, 1]
+        self.location_qp_cost_weights = [10, 2]
         self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
@@ -1197,10 +1197,8 @@ class TrifingerNYU(VecTask):
                 self.location_qp_solver.reset()
                 for i in range(max_it):
                     self.location_qp_solver.step()
-                task_space_force = self.location_qp_solver.prob.yk.clone()
 
-                # convert force to joint torques
-                computed_torque = bmv(jacobian_transpose, task_space_force)
+                computed_torque = self.location_qp_solver.prob.yk.clone()
 
                 # print('desired_ftip_pos', desired_fingertip_position[env_id])
                 # print('torque_ref', self.action_transformed[env_id])
