@@ -454,7 +454,7 @@ class TrifingerNYU(VecTask):
         self.location_qp_solver = FISTA(self.location_qp, device=self.device)
 
         self.force_qp_cost_weights = [1, 200, 1e-4]
-        self.location_qp_cost_weights = [100, 10]
+        self.location_qp_cost_weights = [100, 1]
         self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors

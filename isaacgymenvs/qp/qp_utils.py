@@ -73,8 +73,8 @@ def get_location_qp_data(ftip_pos: torch.Tensor, ftip_pos_des: torch.Tensor, tor
     Q1 = jacobian @ jacobian_transpose
     q1 = -2 * bmv(jacobian_transpose, torque_ref)
 
-    ftip_pos_diff = ftip_pos_des - ftip_pos
-    task_space_force = torch.tensor([150, 150, 150] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff.reshape(batch_size, 9)
+    ftip_pos_diff = (ftip_pos_des - ftip_pos).reshape(batch_size, 9)
+    task_space_force = torch.tensor([100, 100, 200] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff
     Q2 = torch.zeros_like(Q1)
     Q2[:, diag_idx, diag_idx] = 1.
     q2 = -2 * task_space_force
