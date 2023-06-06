@@ -287,8 +287,8 @@ class TrifingerNYU(VecTask):
             high=np.full(_dims.WrenchDim.value, 1.0, dtype=np.float32),
         ),
         "fingertip_force": SimpleNamespace(
-            low=np.full(3, -5.0, dtype=np.float32),
-            high=np.full(3, 5.0, dtype=np.float32),
+            low=np.full(3, -2.5, dtype=np.float32),
+            high=np.full(3, 2.5, dtype=np.float32),
         ),
         # used if we want to have joint stiffness/damping as parameters`
         "joint_stiffness": SimpleNamespace(
@@ -1298,7 +1298,7 @@ class TrifingerNYU(VecTask):
                 task_space_force = ftip_force_des
                 
             jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
-            computed_torque = torch.squeeze(jacobian_transpose @ task_space_force.view(self.num_envs, 9, 1), dim=2)
+            computed_torque = bmv(jacobian_transpose, task_space_force)
 
         else:
             msg = f"Invalid command mode. Input: {self.cfg['env']['command_mode']} not in ['torque', 'position', 'object_centric']."
