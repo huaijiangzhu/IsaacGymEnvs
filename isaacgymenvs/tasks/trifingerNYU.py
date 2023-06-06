@@ -287,8 +287,8 @@ class TrifingerNYU(VecTask):
             high=np.full(_dims.WrenchDim.value, 1.0, dtype=np.float32),
         ),
         "fingertip_force": SimpleNamespace(
-            low=np.full(3, -2.5, dtype=np.float32),
-            high=np.full(3, 2.5, dtype=np.float32),
+            low=np.full(3, -1.5, dtype=np.float32),
+            high=np.full(3, 1.5, dtype=np.float32),
         ),
         # used if we want to have joint stiffness/damping as parameters`
         "joint_stiffness": SimpleNamespace(
@@ -1712,7 +1712,6 @@ def compute_trifinger_observations_states(
 """
 Sampling of cuboidal object
 """
-
 
 @torch.jit.script
 def random_xy(num: int, max_com_distance_to_center: float, device: str) -> Tuple[torch.Tensor, torch.Tensor]:
