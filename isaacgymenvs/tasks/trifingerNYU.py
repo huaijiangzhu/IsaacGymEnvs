@@ -454,7 +454,7 @@ class TrifingerNYU(VecTask):
         self.location_qp_solver = FISTA(self.location_qp, device=self.device)
 
         self.force_qp_cost_weights = [1, 200, 1e-4]
-        self.location_qp_cost_weights = [10, 2]
+        self.location_qp_cost_weights = [15, 1]
         self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
@@ -1184,7 +1184,7 @@ class TrifingerNYU(VecTask):
             if self.cfg["env"]["enable_location_qp"]:
                 # set up location qp
                 max_it = 20
-                env_id = 5
+                env_id = 1
                 desired_fingertip_position = object_position.unsqueeze(1).repeat(1, 3, 1)
                 
                 Q, q = get_location_qp_data(fingertip_position, 
@@ -1200,9 +1200,9 @@ class TrifingerNYU(VecTask):
 
                 computed_torque = self.location_qp_solver.prob.yk.clone()
 
-                # print('desired_ftip_pos', desired_fingertip_position[env_id])
-                # print('torque_ref', self.action_transformed[env_id])
-                # print('computed_torque', computed_torque[env_id])
+                print('desired_ftip_pos', desired_fingertip_position[env_id])
+                print('torque_ref', self.action_transformed[env_id])
+                print('computed_torque', computed_torque[env_id])
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
