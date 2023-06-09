@@ -30,7 +30,8 @@ def get_contact_frame_orn(contact_normals: torch.Tensor):
     return orn
 
 @torch.jit.script
-def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, total_force_des: torch.Tensor, weights: List[float]):
+def get_force_qp_data(ftip_pos: torch.Tensor, object_pose: torch.Tensor, 
+                      total_force_des: torch.Tensor, torque_ref: torch.Tensor, weights: List[float]):
     # get ftip positin in the object frame
     batch_size, num_ftip, _ = ftip_pos.shape
     num_vars = num_ftip * 3
@@ -67,18 +68,15 @@ def get_location_qp_data(ftip_pos: torch.Tensor, ftip_pos_des: torch.Tensor, tor
     batch_size, num_ftip, _ = ftip_pos.shape
     num_vars = num_ftip * 3
     num_vars = 9
-    diag_idx = torch.arange(num_vars)
     
     jacobian_transpose = torch.transpose(jacobian, 1, 2)
     ftip_pos_diff = (ftip_pos_des - ftip_pos).reshape(batch_size, 9)
-    task_space_force = torch.tensor([100, 100, 200] * 3, dtype=torch.float32, device=torque_ref.device) * ftip_pos_diff
+    task_space_force = torch.tensor([100, 100, 100] * 3, dtype=torch.float32, device=ftip_pos.device) * ftip_pos_diff
 
-    Q1 = torch.zeros(batch_size, num_vars, num_vars).to(torque_ref.device)
-    Q1[:, diag_idx, diag_idx] = 1.
+    Q1 = torch.eye(num_vars).repeat(batch_size, 1, 1).to(ftip_pos.device)
     q1 = -2 * torque_ref
 
-    Q2 = torch.zeros(batch_size, num_vars, num_vars).to(torque_ref.device)
-    Q2[:, diag_idx, diag_idx] = 1.
+    Q2 = torch.eye(num_vars).repeat(batch_size, 1, 1).to(ftip_pos.device)
     q2 = -2 * bmv(jacobian_transpose, task_space_force)
 
     # jacobian_transpose = torch.transpose(jacobian, 1, 2)

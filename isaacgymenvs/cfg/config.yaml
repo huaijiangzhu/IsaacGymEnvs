@@ -43,10 +43,13 @@ wandb_group: 'trifinger_force_qp_liftorient'
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
 wandb_project: 'trifinger_isaac'
+
 capture_video: False
 capture_video_freq: 750
 capture_video_len: 200
 force_render: True
+
+group: 'locqp'
 
 # disables rendering
 headless: True

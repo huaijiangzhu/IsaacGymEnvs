@@ -22,7 +22,7 @@ env:
 
   command_mode: torque
   enable_force_qp: false
-  enable_location_qp: false
+  enable_location_qp: true
   normalize_action: true
   cube_obs_keypoints: true
   reset_distribution:

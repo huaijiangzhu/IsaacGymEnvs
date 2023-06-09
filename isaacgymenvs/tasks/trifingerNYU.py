@@ -357,7 +357,7 @@ class TrifingerNYU(VecTask):
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
         "stiffness": [200.0, 200.0, 200.0] * _dims.NumFingers.value,
-        "damping": [5.0, 5.0, 5.0] * _dims.NumFingers.value
+        "damping": [3.0, 3.0, 3.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -445,8 +445,8 @@ class TrifingerNYU(VecTask):
 
         # construct QPs
         num_vars = 9
-        self.force_lb = -10 * torch.ones(self.num_envs, num_vars)
-        self.force_ub = 10 * torch.ones(self.num_envs, num_vars)
+        self.force_lb = -1.5 * torch.ones(self.num_envs, num_vars)
+        self.force_ub = 1.5 * torch.ones(self.num_envs, num_vars)
         self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
         self.force_qp_solver = FISTA(self.force_qp, device=self.device)
 
@@ -454,7 +454,6 @@ class TrifingerNYU(VecTask):
         self.location_qp_solver = FISTA(self.location_qp, device=self.device)
 
         self.force_qp_cost_weights = [1, 200, 1e-4]
-        self.location_qp_cost_weights = [15, 1]
         self.gravity = torch.tensor([0, 0, -9.81]).repeat(self.num_envs, 1).to(self.device)
 
         # change constant buffers from numpy/lists into torch tensors
@@ -1184,25 +1183,29 @@ class TrifingerNYU(VecTask):
             if self.cfg["env"]["enable_location_qp"]:
                 # set up location qp
                 max_it = 20
-                env_id = 1
                 desired_fingertip_position = object_position.unsqueeze(1).repeat(1, 3, 1)
-                
+                location_qp_cost_weights = [10, 1]
+
                 Q, q = get_location_qp_data(fingertip_position, 
                                             desired_fingertip_position, 
                                             self.action_transformed, 
                                             jacobian_fingertip_linear, 
-                                            self.location_qp_cost_weights)
+                                            location_qp_cost_weights)
                 
                 self.location_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
                 self.location_qp_solver.reset()
                 for i in range(max_it):
                     self.location_qp_solver.step()
-
                 computed_torque = self.location_qp_solver.prob.yk.clone()
 
-                print('desired_ftip_pos', desired_fingertip_position[env_id])
-                print('torque_ref', self.action_transformed[env_id])
-                print('computed_torque', computed_torque[env_id])
+                # velocity damping
+                computed_torque -= bmv(jacobian_transpose, 
+                                       (self._robot_task_space_gains["damping"]  * fingertip_velocity))
+
+                # env_id = 1
+                # print('desired_ftip_pos', desired_fingertip_position[env_id])
+                # print('torque_ref', self.action_transformed[env_id])
+                # print('computed_torque', computed_torque[env_id])
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
@@ -1591,7 +1594,7 @@ def compute_trifinger_reward(
 
     # Reward penalizing finger movement
     fingertip_vel = (fingertip_state[:, :, 0:3] - prev_fingertip_state[:, :, 0:3]) / dt
-    finger_movement_penalty = finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
+    finger_movement_penalty = 0 * finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
     # Reward for finger reaching the object
     curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
