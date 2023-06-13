@@ -1176,6 +1176,8 @@ class TrifingerNYU(VecTask):
         object_position = object_pose[:, 0:3]
         desired_object_position = self._desired_object_poses_buf[:, 0:3]
 
+
+
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
@@ -1186,11 +1188,11 @@ class TrifingerNYU(VecTask):
                 desired_fingertip_position = object_position.unsqueeze(1).repeat(1, 3, 1)
                 location_qp_cost_weights = [10, 1]
 
-                Q, q = get_location_qp_data(fingertip_position, 
-                                            desired_fingertip_position, 
-                                            self.action_transformed, 
-                                            jacobian_fingertip_linear, 
-                                            location_qp_cost_weights)
+                ftip_pos_diff = (desired_fingertip_position - fingertip_position).reshape(self.num_envs, 9)
+                task_space_force_reach_com = torch.tensor([100, 100, 100] * 3, dtype=torch.float32, device=self.device) * ftip_pos_diff
+
+                Q, q = get_projection_qp_data(self.action_transformed, task_space_force_reach_com,
+                                              jacobian_transpose, location_qp_cost_weights)
                 
                 self.location_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
                 self.location_qp_solver.reset()
@@ -1601,7 +1603,7 @@ def compute_trifinger_reward(
     prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_rate = curr_norms - prev_norms
-    finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+    finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
     # # Reward grasp metric
     # # grasp_sched_val = 0.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 1.0

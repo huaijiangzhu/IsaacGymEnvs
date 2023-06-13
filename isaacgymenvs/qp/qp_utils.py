@@ -95,3 +95,20 @@ def get_location_qp_data(ftip_pos: torch.Tensor, ftip_pos_des: torch.Tensor, tor
 
     return Q, q
 
+@torch.jit.script
+def get_projection_qp_data(torque_ref: torch.Tensor, task_space_force_ref: torch.Tensor,
+                           jacobian_transpose: torch.Tensor, weights: List[float]):
+    batch_size, num_vars = torque_ref.shape
+    
+    Q1 = torch.eye(num_vars).repeat(batch_size, 1, 1).to(torque_ref.device)
+    q1 = -2 * torque_ref
+
+    Q2 = torch.eye(num_vars).repeat(batch_size, 1, 1).to(torque_ref.device)
+    q2 = -2 * bmv(jacobian_transpose, task_space_force_ref)
+    
+    w1, w2 = weights
+    Q = w1*Q1 + w2*Q2
+    q = w1*q1 + w2*q2
+
+    return Q, q
+
