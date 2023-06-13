@@ -105,10 +105,69 @@ def get_projection_qp_data(torque_ref: torch.Tensor, task_space_force_ref: torch
 
     Q2 = torch.eye(num_vars).repeat(batch_size, 1, 1).to(torque_ref.device)
     q2 = -2 * bmv(jacobian_transpose, task_space_force_ref)
-    
+
     w1, w2 = weights
     Q = w1*Q1 + w2*Q2
     q = w1*q1 + w2*q2
 
     return Q, q
 
+
+def get_force_qp_data2(ftip_pos: torch.Tensor, object_pose: torch.Tensor, 
+                       total_force_des: torch.Tensor, torque_ref: torch.Tensor, jacobian_transpose: torch.Tensor,
+                       weights: List[float]):
+    # get ftip positin in the object frame
+    batch_size, num_ftip, _ = ftip_pos.shape
+    num_vars = num_ftip * 3
+
+    p = SE3_inverse_transform(object_pose.repeat_interleave(3, dim=0), ftip_pos.view(-1, 3))
+    contact_normals = get_cube_contact_normals(p)
+    object_orn = quat2mat(object_pose[:, 3:])    
+    
+    # force cost
+    R = get_contact_frame_orn(contact_normals)
+    R_vstacked = R.transpose(1, 2).reshape(-1, 3 * num_ftip, 3)
+    Q1 = R_vstacked @ R_vstacked.transpose(1, 2)
+    total_force_des_object_frame = bmv(object_orn.transpose(1,2), total_force_des)
+    q1 = -2 * bmv(R_vstacked, total_force_des_object_frame)
+    
+    # torque cost
+    pxR = vec2skewsym_mat(p) @ R
+    pxR_vstacked = pxR.transpose(1, 2).reshape(-1, 3 * num_ftip, 3)
+    Q2 = pxR_vstacked @ pxR_vstacked.transpose(1, 2)
+    
+    # joint torque cost
+    R_reshaped = R.view(batch_size, num_ftip, 3, 3)
+    R_diag = torch.zeros(batch_size, 9, 9).to(ftip_pos.device)
+    for i in range(num_ftip):
+        R_diag[:, i*3:i*3 + 3, i*3:i*3 + 3] = R_reshaped[:, i]
+    object_orn_diag = torch.zeros(batch_size, 9, 9).to(ftip_pos.device)
+    for i in range(num_ftip):
+        object_orn_diag[:, i*3:i*3 + 3, i*3:i*3 + 3] = object_orn
+    A = jacobian_transpose @ object_orn_diag @ R_diag
+    Q3 = torch.transpose(A, 1, 2) @ A
+    q3 = -2 * bmv(A, torque_ref)
+    
+    # regularization
+    Q4 = 1e-4 * torch.eye(3 * num_ftip).repeat(batch_size, 1, 1).to(ftip_pos.device)
+    
+    # If any of contact normals == 0, set the desired force and torque weights to zero
+    reshaped_tensor = Q1.view(batch_size, -1)
+    mask = torch.any(reshaped_tensor[:, ::num_vars+1] == 0, dim=1)
+
+    # construct total cost
+    weights = torch.tensor(weights, dtype=torch.float32, device=ftip_pos.device).repeat(batch_size, 1)
+    w1, w2, w3 = weights.split(1, dim=1)
+    w1[mask] = 0
+    w2[mask] = 0
+    w3[mask] = 0
+    
+    q = w1*q1 + w3*q3
+    
+    w1 = w1.view(batch_size, 1, 1)
+    w2 = w2.view(batch_size, 1, 1)
+    w3 = w3.view(batch_size, 1, 1)
+    
+    Q = w1 * Q1 + w2 * Q2 + w3 * Q3 + Q4
+    
+    return Q, q, R_vstacked, pxR_vstacked, contact_normals

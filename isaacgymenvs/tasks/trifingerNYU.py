@@ -1176,12 +1176,33 @@ class TrifingerNYU(VecTask):
         object_position = object_pose[:, 0:3]
         desired_object_position = self._desired_object_poses_buf[:, 0:3]
 
-
-
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
             computed_torque = self.action_transformed
+            task_space_force = torch.zeros(self.num_envs, 9).to(self.device)
+
+            if self.cfg["env"]["enable_force_qp"]:
+                max_it = 20
+                desired_object_acceleration = 10 * (desired_object_position - object_position)
+                desired_object_acceleration += torch.tensor([0, 0, 9.81]).to(desired_object_acceleration.device)
+                desired_total_force = 0.08 * desired_object_acceleration
+                force_qp_cost_weights = [1, 200, 0.01]
+                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data2(fingertip_position, object_pose, 
+                                                                                     desired_total_force, computed_torque,
+                                                                                     jacobian_transpose, force_qp_cost_weights)
+                self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
+                self.force_qp_solver.reset()
+                for i in range(max_it):
+                    self.force_qp_solver.step()
+                ftip_force_contact_frame = self.force_qp_solver.prob.yk.clone()
+
+                # convert force to the task space (world frame)
+                R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
+                ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
+                object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
+                task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)  
+
             if self.cfg["env"]["enable_location_qp"]:
                 # set up location qp
                 max_it = 20
@@ -1191,7 +1212,10 @@ class TrifingerNYU(VecTask):
                 ftip_pos_diff = (desired_fingertip_position - fingertip_position).reshape(self.num_envs, 9)
                 task_space_force_reach_com = torch.tensor([100, 100, 100] * 3, dtype=torch.float32, device=self.device) * ftip_pos_diff
 
-                Q, q = get_projection_qp_data(self.action_transformed, task_space_force_reach_com,
+                zero_rows = (task_space_force.sum(dim=1) == 0) 
+                task_space_force[zero_rows] = task_space_force_reach_com[zero_rows]  
+
+                Q, q = get_projection_qp_data(computed_torque, task_space_force,
                                               jacobian_transpose, location_qp_cost_weights)
                 
                 self.location_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
