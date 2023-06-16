@@ -39,7 +39,7 @@ checkpoint: ''
 multi_gpu: False
 
 wandb_activate: False
-wandb_group: 'trifinger_force_qp_liftorient'
+wandb_group: 'trifinger_qp'
 wandb_name: ${train.params.config.name}
 wandb_entity: 'hjzhu'
 wandb_project: 'trifinger_isaac'

@@ -1225,9 +1225,10 @@ class TrifingerNYU(VecTask):
                     self.location_qp_solver.step()
                 computed_torque = self.location_qp_solver.prob.yk.clone()
 
-                # velocity damping
+                # fingertip velocity damping
+                ftip_damping = torch.tensor([self.cfg["env"]["ftip_damping"]], dtype=torch.float32, device=self.device)
                 computed_torque -= bmv(jacobian_transpose, 
-                                       (self._robot_task_space_gains["damping"]  * fingertip_velocity))
+                                       (ftip_damping  * fingertip_velocity))
 
                 # env_id = 1
                 # print('desired_ftip_pos', desired_fingertip_position[env_id])
@@ -1628,7 +1629,7 @@ def compute_trifinger_reward(
     prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_rate = curr_norms - prev_norms
-    finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+    finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
     # # Reward grasp metric
     # # grasp_sched_val = 0.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 1.0
