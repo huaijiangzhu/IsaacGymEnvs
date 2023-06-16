@@ -61,7 +61,7 @@ def SE3_inverse_transform(
 
 @torch.jit.script
 def vec2skewsym_mat(vec: torch.Tensor):
-    batch_size, _ = vec.shape
+    batch_size = len(vec)
     mat = torch.zeros(batch_size, 3, 3, device=vec.device)
     
     mat[:, 0, 1] = -vec[:, 2]
@@ -72,3 +72,38 @@ def vec2skewsym_mat(vec: torch.Tensor):
     mat[:, 2, 1] = vec[:, 0]
     
     return mat
+
+@torch.jit.script
+def skewsym_mat2vec(mat: torch.Tensor):
+    batch_size = len(mat)
+    vec = torch.zeros(batch_size, 3, device=mat.device)
+    
+    vec[:, 0] = -mat[:, 1, 2]
+    vec[:, 1] = mat[:, 0, 2] 
+    vec[:, 2] = mat[:, 1, 0]
+    
+    return vec
+
+@torch.jit.script
+def log3(rot_mat: torch.Tensor):
+    batch_size = len(rot_mat)
+    tr = rot_mat[:, 0, 0] + rot_mat[:, 1, 1] + rot_mat[:, 2, 2]
+    theta = torch.acos((tr - 1) / 2)
+
+    zero_theta_mask = theta.abs() < 1e-6
+    non_zero_theta_mask = ~zero_theta_mask
+    coeff_non_zero_theta = theta[non_zero_theta_mask] / (2 * torch.sin(theta[non_zero_theta_mask]))
+    non_zero_log_rot = coeff_non_zero_theta.view(-1, 1, 1) * (rot_mat[non_zero_theta_mask] - rot_mat[non_zero_theta_mask].transpose(1, 2))
+    
+    pi_theta_mask = (theta == torch.pi)
+    omega = torch.zeros(len(rot_mat[pi_theta_mask]), 3).to(rot_mat.device)
+    omega[:, 0] = rot_mat[pi_theta_mask][:, 0, 2]
+    omega[:, 1] = rot_mat[pi_theta_mask][:, 1, 2]
+    omega[:, 2] = 1 + rot_mat[pi_theta_mask][:, 2, 2]
+    coeff_pi_theta = theta[pi_theta_mask] / torch.sqrt(2 + 2*rot_mat[pi_theta_mask][:, 2, 2])
+    
+    log_rot = torch.zeros(batch_size, 3).to(rot_mat.device)
+    log_rot[non_zero_theta_mask] = skewsym_mat2vec(non_zero_log_rot)
+    log_rot[pi_theta_mask] = -coeff_pi_theta.view(-1, 1) * omega # both omega and -omega are correct, use this convention to match pinocchio log3
+
+    return log_rot

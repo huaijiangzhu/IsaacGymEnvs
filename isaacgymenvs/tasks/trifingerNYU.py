@@ -357,7 +357,7 @@ class TrifingerNYU(VecTask):
         # The kp and kd gains of the task-space impedance control of the fingers.
         # Note: This depends on simulation step size and is set for a rate of 250 Hz.
         "stiffness": [200.0, 200.0, 200.0] * _dims.NumFingers.value,
-        "damping": [3.0, 3.0, 3.0] * _dims.NumFingers.value
+        "damping": [6.0, 6.0, 6.0] * _dims.NumFingers.value
     }
 
     # action_dim = _dims.JointTorqueDim.values
@@ -1210,7 +1210,8 @@ class TrifingerNYU(VecTask):
                 location_qp_cost_weights = [10, 1]
 
                 ftip_pos_diff = (desired_fingertip_position - fingertip_position).reshape(self.num_envs, 9)
-                task_space_force_reach_com = torch.tensor([100, 100, 100] * 3, dtype=torch.float32, device=self.device) * ftip_pos_diff
+                task_space_force_reach_com = torch.tensor([100, 100, 100] * 3, 
+                                                          dtype=torch.float32, device=self.device) * ftip_pos_diff
 
                 zero_rows = (task_space_force.sum(dim=1) == 0) 
                 task_space_force[zero_rows] = task_space_force_reach_com[zero_rows]  
