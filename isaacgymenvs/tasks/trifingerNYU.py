@@ -1210,8 +1210,11 @@ class TrifingerNYU(VecTask):
                 location_qp_cost_weights = [10, 1]
 
                 ftip_pos_diff = (desired_fingertip_position - fingertip_position).reshape(self.num_envs, 9)
-                task_space_force_reach_com = torch.tensor([100, 100, 100] * 3, 
-                                                          dtype=torch.float32, device=self.device) * ftip_pos_diff
+                # task_space_force_reach_com = torch.tensor([150, 150, 150] * 3, 
+                #                                           dtype=torch.float32, device=self.device) * ftip_pos_diff
+                ftip_reaching_direction = ftip_pos_diff / torch.norm(ftip_pos_diff, dim=1, keepdim=True)
+                ftip_reaching_scale = torch.tensor([self.cfg["env"]["ftip_reaching_scale"]], dtype=torch.float32, device=self.device)
+                task_space_force_reach_com = ftip_reaching_scale * ftip_reaching_direction
 
                 zero_rows = (task_space_force.sum(dim=1) == 0) 
                 task_space_force[zero_rows] = task_space_force_reach_com[zero_rows]  
@@ -1225,15 +1228,15 @@ class TrifingerNYU(VecTask):
                     self.location_qp_solver.step()
                 computed_torque = self.location_qp_solver.prob.yk.clone()
 
-                # fingertip velocity damping
-                ftip_damping = torch.tensor([self.cfg["env"]["ftip_damping"]], dtype=torch.float32, device=self.device)
-                computed_torque -= bmv(jacobian_transpose, 
-                                       (ftip_damping  * fingertip_velocity))
-
                 # env_id = 1
                 # print('desired_ftip_pos', desired_fingertip_position[env_id])
                 # print('torque_ref', self.action_transformed[env_id])
                 # print('computed_torque', computed_torque[env_id])
+
+            # fingertip velocity damping
+            if self.cfg["env"]["enable_ftip_damping"]:
+                ftip_damping = torch.tensor([self.cfg["env"]["ftip_damping"]], dtype=torch.float32, device=self.device)
+                computed_torque -= bmv(jacobian_transpose, (ftip_damping  * fingertip_velocity))
             
         elif self.cfg["env"]["command_mode"] == 'position':
             # command is the desired joint positions
@@ -1629,15 +1632,13 @@ def compute_trifinger_reward(
     prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_rate = curr_norms - prev_norms
-    finger_reach_object_reward = ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+    finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
     # # Reward grasp metric
-    # # grasp_sched_val = 0.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 1.0
-    # grasp_sched_val = 1.0
     # curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
     # prev_fingertip_center_norms = torch.norm(torch.mean(prev_fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
     # fingertip_center_rate = curr_fingertip_center_norms - prev_fingertip_center_norms
-    # finger_reach_object_reward = grasp_sched_val * finger_reach_object_weight * fingertip_center_rate
+    # finger_reach_object_reward = finger_reach_object_weight * fingertip_center_rate
 
     if use_keypoints:
         object_keypoints = gen_keypoints(object_state[:, 0:7])

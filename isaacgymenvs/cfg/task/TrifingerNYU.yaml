@@ -32,9 +32,11 @@ env:
       type: default
 
   enable_force_qp: false
-  enable_location_qp: False
+  enable_location_qp: false
 
+  enable_ftip_damping: true
   ftip_damping: 3.0
+  ftip_reaching_scale: 20.0
 
   reward_terms:
     finger_move_penalty:
