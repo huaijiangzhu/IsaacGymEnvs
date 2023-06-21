@@ -852,7 +852,8 @@ class TrifingerNYU(VecTask):
             self._desired_fingertip_position_history[0],
             self._desired_fingertip_position_history[1],
             self.cfg["env"]["reward_terms"]["keypoints_dist"]["activate"],
-            self.cfg["test"]
+            self.cfg["test"],
+            self.num_ftip_contacts
         )
 
         self.extras.update({"env/rewards/"+k: v.mean() for k, v in log_dict.items()})
@@ -1181,16 +1182,22 @@ class TrifingerNYU(VecTask):
             # command is the desired joint torque
             computed_torque = self.action_transformed
             task_space_force = torch.zeros(self.num_envs, 9).to(self.device)
+            self.num_ftip_contacts = torch.zeros(self.num_envs).to(self.device)
 
             if self.cfg["env"]["enable_force_qp"]:
                 max_it = 20
                 desired_object_acceleration = 10 * (desired_object_position - object_position)
                 desired_object_acceleration += torch.tensor([0, 0, 9.81]).to(desired_object_acceleration.device)
-                desired_total_force = 0.08 * desired_object_acceleration
+                object_mass = 0.08
+                force_qp_scale = object_mass * torch.tensor([self.cfg["env"]["force_qp_scale"]], dtype=torch.float32, device=self.device)
+
+                desired_total_force = force_qp_scale * desired_object_acceleration
                 force_qp_cost_weights = [1, 200, 0.01]
                 Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data2(fingertip_position, object_pose, 
                                                                                      desired_total_force, computed_torque,
                                                                                      jacobian_transpose, force_qp_cost_weights)
+                
+                self.num_ftip_contacts = torch.abs(contact_normals.view(self.num_envs, -1)).sum(dim=1)
                 self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
                 self.force_qp_solver.reset()
                 for i in range(max_it):
@@ -1615,7 +1622,8 @@ def compute_trifinger_reward(
         desired_fingertip_position: torch.Tensor,
         prev_desired_fingertip_position: torch.Tensor,
         use_keypoints: bool,
-        test: bool
+        test: bool,
+        num_ftip_contacts: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     
     # hack to get testing metrics
@@ -1633,6 +1641,8 @@ def compute_trifinger_reward(
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_rate = curr_norms - prev_norms
     finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+
+    fingertip_contact_reward = 0.01 * num_ftip_contacts
 
     # # Reward grasp metric
     # curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
@@ -1673,12 +1683,13 @@ def compute_trifinger_reward(
         total_reward = (
                 finger_movement_penalty
                 + finger_reach_object_reward
-                + pose_reward
+                + pose_reward + fingertip_contact_reward
         )
         info: Dict[str, torch.Tensor] = {
         'finger_movement_penalty': finger_movement_penalty,
         'finger_reach_object_reward': finger_reach_object_reward,
         'pose_reward': pose_reward,
+        'fingertip_contact_reward': fingertip_contact_reward,
         'reward': total_reward,
         }
 
