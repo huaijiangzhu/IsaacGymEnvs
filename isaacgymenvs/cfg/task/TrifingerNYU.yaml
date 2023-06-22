@@ -38,7 +38,8 @@ env:
   ftip_damping: 3.0
 
   ftip_reaching_scale: 10.0
-  force_qp_scale: 5.0
+  force_qp_scale: 10.0
+  contact_rwd_weight: 0.05
 
   reward_terms:
     finger_move_penalty:

@@ -853,7 +853,8 @@ class TrifingerNYU(VecTask):
             self._desired_fingertip_position_history[1],
             self.cfg["env"]["reward_terms"]["keypoints_dist"]["activate"],
             self.cfg["test"],
-            self.num_ftip_contacts
+            self.num_ftip_contacts,
+            self.cfg["env"]["contact_rwd_weight"]
         )
 
         self.extras.update({"env/rewards/"+k: v.mean() for k, v in log_dict.items()})
@@ -1623,7 +1624,8 @@ def compute_trifinger_reward(
         prev_desired_fingertip_position: torch.Tensor,
         use_keypoints: bool,
         test: bool,
-        num_ftip_contacts: torch.Tensor
+        num_ftip_contacts: torch.Tensor,
+        contact_rwd_weight: float
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     
     # hack to get testing metrics
@@ -1642,7 +1644,7 @@ def compute_trifinger_reward(
     finger_reach_object_rate = curr_norms - prev_norms
     finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
-    fingertip_contact_reward = 0.01 * num_ftip_contacts
+    fingertip_contact_reward = contact_rwd_weight * num_ftip_contacts
 
     # # Reward grasp metric
     # curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)
