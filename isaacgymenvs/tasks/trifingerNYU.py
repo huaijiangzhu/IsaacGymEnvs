@@ -447,7 +447,7 @@ class TrifingerNYU(VecTask):
         num_vars = 9
         self.force_lb = -1.5 * torch.ones(self.num_envs, num_vars)
         self.force_ub = 1.5 * torch.ones(self.num_envs, num_vars)
-        self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=1.0, device=self.device)
+        self.force_qp = ForceQP(self.num_envs, num_vars, friction_coeff=0.5, device=self.device)
         self.force_qp_solver = FISTA(self.force_qp, device=self.device)
 
         self.location_qp = LocationQP(self.num_envs, num_vars, device=self.device)
@@ -854,7 +854,8 @@ class TrifingerNYU(VecTask):
             self.cfg["env"]["reward_terms"]["keypoints_dist"]["activate"],
             self.cfg["test"],
             self.num_ftip_contacts,
-            self.cfg["env"]["contact_rwd_weight"]
+            self.cfg["env"]["contact_rwd_weight"],
+            self.cfg["env"]["enable_location_qp"] or self.cfg["env"]["enable_force_qp"]
         )
 
         self.extras.update({"env/rewards/"+k: v.mean() for k, v in log_dict.items()})
@@ -1166,24 +1167,34 @@ class TrifingerNYU(VecTask):
         else:
             self.action_transformed = self.actions
 
-        self._action_history.append(self.action_transformed.clone())
+        self._action_history.appendleft(self.action_transformed.clone())
+        if len(self._action_history) < 2: 
+            self._action_history.appendleft(self.action_transformed.clone())
+
+        self.action_transformed = 0.95 * self.action_transformed + 0.05 * self._action_history[1]
 
         # prepare some quantities that might be needed
         jacobian_fingertip_linear = self.get_fingertip_jacobian_linear()
         jacobian_transpose = torch.transpose(jacobian_fingertip_linear, 1, 2)
+
         fingertip_state = self._rigid_body_state[:, self._fingertip_indices]
         fingertip_position = fingertip_state[:, :, 0:3]
         fingertip_velocity = fingertip_state[:, :, 7:10].reshape(self.num_envs, 9)
+
         object_pose = self._object_state_history[0][:, 0:7]
         object_position = object_pose[:, 0:3]
         desired_object_position = self._desired_object_poses_buf[:, 0:3]
+
+        fingertip_position_object_frame = SE3_inverse_transform(object_pose.repeat_interleave(3, dim=0), fingertip_position.view(-1, 3))
+        contact_normals = get_cube_contact_normals(fingertip_position_object_frame)
+        self.num_ftip_contacts = torch.abs(contact_normals.view(self.num_envs, -1)).sum(dim=1)
 
         # compute command on the basis of mode selected
         if self.cfg["env"]["command_mode"] == 'torque':
             # command is the desired joint torque
             computed_torque = self.action_transformed
             task_space_force = torch.zeros(self.num_envs, 9).to(self.device)
-            self.num_ftip_contacts = torch.zeros(self.num_envs).to(self.device)
+            projected_torque = torch.zeros(self.num_envs, 9).to(self.device)
 
             if self.cfg["env"]["enable_force_qp"]:
                 max_it = 20
@@ -1193,12 +1204,14 @@ class TrifingerNYU(VecTask):
                 force_qp_scale = object_mass * torch.tensor([self.cfg["env"]["force_qp_scale"]], dtype=torch.float32, device=self.device)
 
                 desired_total_force = force_qp_scale * desired_object_acceleration
-                force_qp_cost_weights = [1, 200, 0.01]
-                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data2(fingertip_position, object_pose, 
+                
+                force_qp_cost_weights = [0, 0, 0.5]
+                Q, q, R_vstacked, pxR_vstacked, contact_normals = get_force_qp_data2(fingertip_position, object_pose, contact_normals,
+                                                                                     fingertip_position_object_frame,
                                                                                      desired_total_force, computed_torque,
                                                                                      jacobian_transpose, force_qp_cost_weights)
                 
-                self.num_ftip_contacts = torch.abs(contact_normals.view(self.num_envs, -1)).sum(dim=1)
+                
                 self.force_qp_solver.prob.set_data(Q, q, self.force_lb, self.force_ub)
                 self.force_qp_solver.reset()
                 for i in range(max_it):
@@ -1209,7 +1222,8 @@ class TrifingerNYU(VecTask):
                 R = R_vstacked.reshape(-1, 3, 3).transpose(1, 2)
                 ftip_force_object_frame = stacked_bmv(R, ftip_force_contact_frame)
                 object_orn = quat2mat(object_pose[:, 3:7]).repeat(3, 1, 1)
-                task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)  
+                task_space_force = stacked_bmv(object_orn, ftip_force_object_frame)
+                projected_torque = bmv(jacobian_transpose, task_space_force)
 
             if self.cfg["env"]["enable_location_qp"]:
                 # set up location qp
@@ -1225,6 +1239,7 @@ class TrifingerNYU(VecTask):
                 task_space_force_reach_com = ftip_reaching_scale * ftip_reaching_direction
 
                 zero_rows = (task_space_force.sum(dim=1) == 0) 
+                non_zero_rows = ~(task_space_force.sum(dim=1) == 0) 
                 task_space_force[zero_rows] = task_space_force_reach_com[zero_rows]  
 
                 Q, q = get_projection_qp_data(computed_torque, task_space_force,
@@ -1235,6 +1250,7 @@ class TrifingerNYU(VecTask):
                 for i in range(max_it):
                     self.location_qp_solver.step()
                 computed_torque = self.location_qp_solver.prob.yk.clone()
+                computed_torque[non_zero_rows] = projected_torque[non_zero_rows]
 
                 # env_id = 1
                 # print('desired_ftip_pos', desired_fingertip_position[env_id])
@@ -1447,8 +1463,8 @@ class TrifingerNYU(VecTask):
         # Ref: https://github.com/rr-learning/rrc_simulation/blob/master/python/rrc_simulation/sim_finger.py#L563
         trifinger_props = self.gym.get_asset_rigid_shape_properties(trifinger_asset)
         for p in trifinger_props:
-            p.friction = 1.0
-            p.torsion_friction = 1.0
+            p.friction = 0.6
+            p.torsion_friction = 0.6
             p.restitution = 0.8
         self.gym.set_asset_rigid_shape_properties(trifinger_asset, trifinger_props)
         # extract the frame handles
@@ -1490,8 +1506,8 @@ class TrifingerNYU(VecTask):
         table_props = self.gym.get_asset_rigid_shape_properties(table_asset)
         # iterate over each mesh
         for p in table_props:
-            p.friction = 0.1
-            p.torsion_friction = 0.1
+            p.friction = 0.5
+            p.torsion_friction = 0.5
         self.gym.set_asset_rigid_shape_properties(table_asset, table_props)
         # return the asset
         return table_asset
@@ -1538,7 +1554,7 @@ class TrifingerNYU(VecTask):
         # Ref: https://github.com/rr-learning/rrc_simulation/blob/master/python/rrc_simulation/collision_objects.py#L96
         object_props = self.gym.get_asset_rigid_shape_properties(object_asset)
         for p in object_props:
-            p.friction = 1.0
+            p.friction = 0.6
             p.torsion_friction = 0.001
             p.restitution = 0.0
         self.gym.set_asset_rigid_shape_properties(object_asset, object_props)
@@ -1625,7 +1641,8 @@ def compute_trifinger_reward(
         use_keypoints: bool,
         test: bool,
         num_ftip_contacts: torch.Tensor,
-        contact_rwd_weight: float
+        contact_rwd_weight: float,
+        enable_qp: bool
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
     
     # hack to get testing metrics
@@ -1633,18 +1650,29 @@ def compute_trifinger_reward(
     ft_sched_start = 0
     ft_sched_end = 5e7
 
+    if enable_qp:
+        movement_penalty_activation = 1.
+        reach_object_activation = 0.
+        contact_activation = 1.
+    else:
+        movement_penalty_activation = 1.
+        reach_object_activation = 1.
+        contact_activation = 0.
+
+
     # Reward penalizing finger movement
     fingertip_vel = (fingertip_state[:, :, 0:3] - prev_fingertip_state[:, :, 0:3]) / dt
-    finger_movement_penalty = 0 * finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
+    finger_movement_penalty = movement_penalty_activation * finger_move_penalty_weight * fingertip_vel.pow(2).view(-1, 9).sum(dim=-1)
 
     # Reward for finger reaching the object
     curr_norms = torch.norm(fingertip_state[:, :, 0:3] - desired_fingertip_position, p=2, dim=-1)
     prev_norms = torch.norm(prev_fingertip_state[:, :, 0:3] - prev_desired_fingertip_position, p=2, dim=-1)
     ft_sched_val = 1.0 if ft_sched_start <= env_steps_count <= ft_sched_end else 0.0
     finger_reach_object_rate = curr_norms - prev_norms
-    finger_reach_object_reward = 0 * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
+    finger_reach_object_reward = reach_object_activation * ft_sched_val * finger_reach_object_weight * finger_reach_object_rate.sum(dim=-1)
 
-    fingertip_contact_reward = contact_rwd_weight * num_ftip_contacts
+    # Reward for fingertip makeing contacts
+    fingertip_contact_reward = contact_activation * contact_rwd_weight * num_ftip_contacts
 
     # # Reward grasp metric
     # curr_fingertip_center_norms = torch.norm(torch.mean(fingertip_state[:, :, :3], dim=1), p=2, dim=-1)

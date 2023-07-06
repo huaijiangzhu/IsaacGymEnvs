@@ -26,7 +26,27 @@
 #     python train.py task.env.enable_location_qp=True task.env.enable_force_qp=True  wandb_activate=True task.env.force_qp_scale=$scale
 # done
 
-for scale in 0.02 0.05 0.1 0.5
+# for scale in 0.2 0.5
+# do
+#     python train.py task.env.enable_location_qp=True task.env.enable_force_qp=True  wandb_activate=True task.env.contact_rwd_weight=$scale
+# done
+
+# for scale in 0.2 0.5 1.0
+# do
+#     python train.py task.env.enable_location_qp=True task.env.enable_force_qp=True  wandb_activate=True task.env.force_qp_torque_ref=$scale
+# done
+
+for seed in 0 1
 do
-    python train.py task.env.enable_location_qp=True task.env.enable_force_qp=True  wandb_activate=True task.env.contact_rwd_weight=$scale
+    python train.py task.env.enable_location_qp=True wandb_group="location_qp" wandb_activate=True seed=$seed
 done
+
+for seed in 0 1
+do
+    python train.py task.env.enable_location_qp=True task.env.enable_force_qp=True wandb_group="force_location_qp" wandb_activate=True seed=$seed
+done
+
+# for seed in 0 1
+# do
+#     python train.py task.env.enable_ftip_damping=False wandb_group="no_qp" wandb_activate=True seed=$seed
+# done

@@ -112,16 +112,17 @@ def get_projection_qp_data(torque_ref: torch.Tensor, task_space_force_ref: torch
 
     return Q, q
 
-
-def get_force_qp_data2(ftip_pos: torch.Tensor, object_pose: torch.Tensor, 
+@torch.jit.script
+def get_force_qp_data2(ftip_pos: torch.Tensor, object_pose: torch.Tensor,  contact_normals: torch.Tensor, 
+                       ftip_pos_local: torch.Tensor,
                        total_force_des: torch.Tensor, torque_ref: torch.Tensor, jacobian_transpose: torch.Tensor,
                        weights: List[float]):
     # get ftip positin in the object frame
     batch_size, num_ftip, _ = ftip_pos.shape
     num_vars = num_ftip * 3
 
-    p = SE3_inverse_transform(object_pose.repeat_interleave(3, dim=0), ftip_pos.view(-1, 3))
-    contact_normals = get_cube_contact_normals(p)
+    # p = SE3_inverse_transform(object_pose.repeat_interleave(3, dim=0), ftip_pos.view(-1, 3))
+    # contact_normals = get_cube_contact_normals(p)
     object_orn = quat2mat(object_pose[:, 3:])    
     
     # force cost
@@ -132,7 +133,7 @@ def get_force_qp_data2(ftip_pos: torch.Tensor, object_pose: torch.Tensor,
     q1 = -2 * bmv(R_vstacked, total_force_des_object_frame)
     
     # torque cost
-    pxR = vec2skewsym_mat(p) @ R
+    pxR = vec2skewsym_mat(ftip_pos_local) @ R
     pxR_vstacked = pxR.transpose(1, 2).reshape(-1, 3 * num_ftip, 3)
     Q2 = pxR_vstacked @ pxR_vstacked.transpose(1, 2)
     
@@ -158,11 +159,12 @@ def get_force_qp_data2(ftip_pos: torch.Tensor, object_pose: torch.Tensor,
     # construct total cost
     weights = torch.tensor(weights, dtype=torch.float32, device=ftip_pos.device).repeat(batch_size, 1)
     w1, w2, w3 = weights.split(1, dim=1)
+
     w1[mask] = 0
     w2[mask] = 0
     w3[mask] = 0
     
-    q = w1*q1 + w3*q3
+    q = w1 * q1 + w3 * q3
     
     w1 = w1.view(batch_size, 1, 1)
     w2 = w2.view(batch_size, 1, 1)
